@@ -60,7 +60,7 @@ fn main()
 	).unwrap();
 
 	let lemon = builder.try_into_lemon().unwrap();
-	let mut out_rust = File::create("/tmp/lem/ca/src/main.rs").unwrap();
+	let mut out_rust = File::create("/tmp/main.rs").unwrap();
 	let mut out_y = File::create("/tmp/main.y").unwrap();
 	lemon.gen_rust(&mut out_rust).unwrap();
 	lemon.gen_log(&mut out_y, false, false).unwrap();
