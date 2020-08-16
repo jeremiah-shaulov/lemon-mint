@@ -1,0 +1,10 @@
+[package]
+name = "lemon-mint"
+version = "0.1.0"
+authors = ["Jeremiah Shaulov <jeremiah.shaulov@gmail.com>"]
+edition = "2018"
+
+[features]
+with-debug = []
+
+[dependencies]
