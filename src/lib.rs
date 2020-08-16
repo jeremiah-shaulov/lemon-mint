@@ -2655,15 +2655,15 @@ impl LemonMint
 		writeln!(out, "const ACCEPT_ACTION: usize = ERROR_ACTION + 1; // YY_ACCEPT_ACTION")?;
 		writeln!(out, "const NO_ACTION: usize = ACCEPT_ACTION + 1; // YY_NO_ACTION")?;
 		writeln!(out, "const MIN_REDUCE: usize = NO_ACTION + 1; // YY_MIN_REDUCE")?;
-		writeln!(out, "const MAX_REDUCE: usize = MIN_REDUCE + N_RULES - 1; // YY_MAX_REDUCE")?;
+		writeln!(out, "//const MAX_REDUCE: usize = MIN_REDUCE + N_RULES - 1; // YY_MAX_REDUCE")?;
 		writeln!(out, "const ERROR_SYMBOL: CodeType = {}; // YYERRORSYMBOL", self.error_symbol)?;
 		writeln!(out, "const WITH_FALLBACK: bool = {}; // YYFALLBACK", if self.n_fallbacks>0 {"true"} else {"false"})?;
 		writeln!(out, "const SHIFT_COUNT: usize = {}; // YY_SHIFT_COUNT", self.shift_count)?;
 		writeln!(out, "const REDUCE_COUNT: usize = {}; // YY_REDUCE_COUNT", self.reduce_count)?;
-		writeln!(out, "const SHIFT_MIN: i32 = {}; // YY_SHIFT_MIN", self.shift_min)?;
-		writeln!(out, "const SHIFT_MAX: i32 = {}; // YY_SHIFT_MAX", self.shift_max)?;
-		writeln!(out, "const REDUCE_MIN: i32 = {}; // YY_REDUCE_MIN", self.reduce_min)?;
-		writeln!(out, "const REDUCE_MAX: i32 = {}; // YY_REDUCE_MAX", self.reduce_max)?;
+		writeln!(out, "//const SHIFT_MIN: i32 = {}; // YY_SHIFT_MIN", self.shift_min)?;
+		writeln!(out, "//const SHIFT_MAX: i32 = {}; // YY_SHIFT_MAX", self.shift_max)?;
+		writeln!(out, "//const REDUCE_MIN: i32 = {}; // YY_REDUCE_MIN", self.reduce_min)?;
+		writeln!(out, "//const REDUCE_MAX: i32 = {}; // YY_REDUCE_MAX", self.reduce_max)?;
 		writeln!(out, "const ACTTAB_COUNT: usize = {}; // YY_ACTTAB_COUNT", self.n_action_table_entries)?;
 		writeln!(out, "const TRACE: bool = {};", if self.with_trace {"true"} else {"false"})?;
 
