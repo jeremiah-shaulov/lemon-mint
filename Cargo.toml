@@ -3,11 +3,12 @@ name = "lemon-mint"
 version = "0.1.0"
 authors = ["Jeremiah Shaulov <jeremiah.shaulov@gmail.com>"]
 edition = "2018"
-keywords = ["lemon", "lalr1", "parser generator"]
+keywords = ["lemon", "lalr1", "parser", "generator"]
 categories = ["parsing"]
 description = "Famous Lemon Parser Generator implemented in rust as library with API."
 license = "MIT"
 readme = "README.md"
+repository = "https://github.com/jeremiah-shaulov/lemon-mint"
 
 [features]
 with-debug = []
