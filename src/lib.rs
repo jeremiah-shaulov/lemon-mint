@@ -1071,10 +1071,32 @@ impl ArrayFormatter
 	}
 }
 
-/// The state vector for the entire parser generator is recorded as
-/// follows.  (LEMON uses no global variables and makes little use of
-/// static variables.  Fields in the following structure can be thought
-/// of as begin global variables in the program.)
+/// Builder class that will finally generate `LemonMint`. Call builder methods to supply parser rules and options - everything that you would normally put to Lemon's Y-grammar file.
+/// Or you can feed the Y-file itself (it's syntax is similar to Lemon's one).
+///
+/// # Example
+///
+/// ```
+/// use lemon_mint::LemonMintBuilder;
+/// use std::sync::Arc;
+///
+/// let fake_filename = Arc::new("source.y".to_string()); // will appear in error messages
+/// let builder = LemonMintBuilder::new().load_y(&fake_filename, "%token_type {f64}\nUnit ::= NEW_LINE.".as_bytes()).unwrap();
+/// let lemon = builder.try_into_lemon().unwrap();
+/// ```
+///
+/// Or:
+///
+/// ```
+/// use lemon_mint::LemonMintBuilder;
+/// use std::sync::Arc;
+///
+/// let fake_filename = Arc::new("source.y".to_string()); // will appear in error messages
+/// let builder = LemonMintBuilder::new()
+/// 	.set_token_type("f64".to_string()).unwrap()
+/// 	.add_rule(&fake_filename, 1, "Unit".to_string(), "NEW_LINE", "".to_string()).unwrap();
+/// let lemon = builder.try_into_lemon().unwrap();
+/// ```
 #[derive(Debug)]
 pub struct LemonMintBuilder
 {	rules: Vec<Rule>,                  // All rules
@@ -1104,7 +1126,8 @@ pub struct LemonMintBuilder
 	no_resort: bool,                   // Do not sort or renumber states
 }
 impl LemonMintBuilder
-{	pub fn new() -> Self
+{	/// Creates new builder
+	pub fn new() -> Self
 	{	Self
 		{	rules: Vec::with_capacity(64),
 			token_type: String::new(),
@@ -2083,17 +2106,63 @@ impl LemonMintBuilder
 		)
 	}
 
+	/// Load a Y-grammar file. You can call this function several times to load grammar by parts, and you can call other builder methods to add/override settings.
 	pub fn load_y_file(self, filename: &Arc<String>) -> ParserResult<Self>
 	{	self.load_y(filename, File::open(filename.as_ref()).map_err(|e| LemonMintError::new(filename, 1, e.to_string()))?)
 	}
 
+	/// Like load_y_file(), but you give file contents as io::Read object.
+	///
+	/// # Example
+	///
+	/// ```
+	/// use lemon_mint::LemonMintBuilder;
+	/// use std::sync::Arc;
+	///
+	/// let fake_filename = Arc::new("source.y".to_string()); // will appear in error messages
+	/// let builder = LemonMintBuilder::new().load_y(&fake_filename, "%token_type {f64}\nUnit ::= NEW_LINE.".as_bytes()).unwrap();
+	/// ```
 	pub fn load_y<R>(mut self, filename: &Arc<String>, input: R) -> ParserResult<Self> where R: io::Read
 	{	let input = BufReader::new(input);
 		let mut n_line = 0;
 		let mut lines = input.lines();
-		while let Some(line) = lines.next()
+		let mut part_till_comment: Option<String> = None; // if a multiline comment opened on a line, this line is not complete, and it will be stored here, and we will wait to closing token
+'l:		while let Some(line) = lines.next()
 		{	n_line += 1;
-			let line = line.map_err(|e| LemonMintError::new(filename, n_line, e.to_string()))?;
+			let mut line = line.map_err(|e| LemonMintError::new(filename, n_line, e.to_string()))?;
+			// comments?
+			if let Some(part) = part_till_comment.take()
+			{	if let Some(pos) = line.find("*/")
+				{	line.replace_range(.. pos+2, &part);
+				}
+				else
+				{	part_till_comment = Some(part);
+					continue;
+				}
+			}
+			loop
+			{	if let Some(pos) = line.find('/')
+				{	match line.bytes().skip(pos+1).next()
+					{	Some(b'/') => // line comment
+						{	line.truncate(pos);
+						}
+						Some(b'*') => // multiline comment
+						{	if let Some(len_minus_2) = line[pos+2 ..].find("*/")
+							{	line.replace_range(pos .. pos+len_minus_2+2, "");
+								continue;
+							}
+							else
+							{	line.truncate(pos);
+								part_till_comment = Some(line);
+								continue 'l;
+							}
+						}
+						_ => {}
+					}
+				}
+				break;
+			}
+			// comments cut from line
 			let mut line = line.trim();
 			if !line.is_empty()
 			{	let mut directive = Directive::Rule;
@@ -2411,17 +2480,21 @@ impl LemonMintBuilder
 		Ok(self)
 	}
 
+	/// Allows to disable finite-state machine tables compression. Don't do this.
 	pub fn set_no_compress(mut self, new_no_compress: bool) -> ParserResult<Self>
 	{	self.no_compress = new_no_compress;
 		Ok(self)
 	}
 
+	/// Disable resorting states. You don't need this functionality.
 	pub fn set_no_resort(mut self, new_no_resort: bool) -> ParserResult<Self>
 	{	self.no_resort = new_no_resort;
 		Ok(self)
 	}
 
-	/// The main program.  Parse the command line and do it...
+	/// When you feed all the parser rules and options, call this method to finally build the parser finite-state machine transition tables.
+	/// If there are problems with your grammar or if there are parser conflicts, this will return Err.
+	/// If parser build succeeds this returns the parser representation as `LemonMint` object.
 	pub fn try_into_lemon(mut self) -> ParserResult<LemonMint>
 	{	// rules
 		let mut rules = mem::replace(&mut self.rules, Vec::new());
@@ -2556,6 +2629,7 @@ fn size_type_to_str(lang: Lang, n_bytes: isize) -> &'static str
 	}
 }
 
+/// The compiled parser that can be saved to a rust file. Use `LemonMintBuilder` to build it.
 #[derive(Debug)]
 pub struct LemonMint
 {	symbols: Symbols,

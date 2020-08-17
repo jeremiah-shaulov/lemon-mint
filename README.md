@@ -108,4 +108,4 @@ The syntax is free and permissive:
 %start_symbol Unit
 ```
 
-Braces allow to specify multiline value, till matching closing brace.
+Braces allow to specify multiline value, till matching closing brace. Supported line and multiline C-style comments.
