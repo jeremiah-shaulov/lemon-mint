@@ -741,12 +741,9 @@ impl SymbolsBuilder
 		let default_symbol_index = default_symbol.borrow().index + self.n_terminals;
 		let mut start_symbol_index = std::usize::MAX;
 		let mut error_symbol_index = std::usize::MAX;
-		let mut array = Vec::new();
-		let empty = Rc::new(RefCell::new(Symbol::new("", 0)));
-		array.resize_with(self.symbols_map.len(), || empty.clone());
+		let mut array = Vec::with_capacity(self.symbols_map.len());
 		for (symbol_name, symbol) in self.symbols_map
-		{	let index =
-			{	let mut symbol_mut = symbol.borrow_mut();
+		{	{	let mut symbol_mut = symbol.borrow_mut();
 				if symbol_mut.typ == SymbolType::NONTERMINAL
 				{	symbol_mut.index += self.n_terminals;
 				}
@@ -757,10 +754,10 @@ impl SymbolsBuilder
 				{	error_symbol_index = symbol_mut.index;
 				}
 				symbol_mut.name = symbol_name;
-				symbol_mut.index
-			};
-			array[index] = symbol;
+			}
+			array.push(symbol);
 		}
+		array.sort_by(|a, b| a.borrow().index.cmp(&b.borrow().index));
 		array[0].borrow_mut().typ = SymbolType::NONTERMINAL; // like in lemon
 		Ok(Symbols {array, n_symbols, n_terminals: self.n_terminals, default_symbol_index, start_symbol_index, error_symbol_index})
 	}
@@ -2310,6 +2307,7 @@ impl LemonMintBuilder
 	}
 
 	///	Enable trace, and set prompt that will be printed before each message.
+	/// The prompt can be empty string.
 	pub fn set_trace_prompt(mut self, value: String) -> ParserResult<Self>
 	{	self.with_trace = true;
 		self.trace_prompt = value;
@@ -2317,27 +2315,65 @@ impl LemonMintBuilder
 	}
 
 	/// Set the parser %extra_argument.
+	/// Only it's type, like:
+	///
+	/// ```
+	/// # use lemon_mint::LemonMintBuilder;
+	///
+	/// let builder = LemonMintBuilder::new().set_extra_argument_type("String".to_string()).unwrap();
+	/// ```
+	///
+	/// In your rust code that uses the generated parser, you initialize the extra argument when you create a Parser object:
+	///
+	/// ```ignore
+	/// %code {
+	/// 	fn main()
+	/// 	{	let mut parser = Parser::new("Initial value".to_string()); // Initial value of the extra argument
+	/// 		assert_eq!(parser.extra, "Initial value".to_string());
+	/// 	}
+	/// }
+	/// ```
+	///
+	/// In actions code, the extra argument is available as variable `&mut extra`:
+	///
+	/// ```ignore
+	/// %token_type {String}
+	/// Unit ::= NEW_LINE(tok). extra.push_str(&tok);
+	/// ```
 	pub fn set_extra_argument_type(mut self, value: String) -> ParserResult<Self>
 	{	self.extra_argument_type = typename_to_string(value);
 		Ok(self)
 	}
 
-	///	Add the parser "%left NAME"
+	///	Add the parser "%left A B C".
+	///
+	/// # Example
+	///
+	/// ```
+	/// # use lemon_mint::LemonMintBuilder;
+	/// # use std::sync::Arc;
+	///
+	/// let fake_filename = Arc::new("source.y".to_string()); // will appear in error messages
+	/// let builder = LemonMintBuilder::new().set_left(&fake_filename, 1, "PLUS MINUS").unwrap().set_left(&fake_filename, 2, "TIMES DIVIDE").unwrap();
+	/// ```
+	///
+	/// * symbol_names - Terminal symbol names, separated by whitespace characters. All the symbols will have the same precedence.
+	/// Further calls to `set_left()`, `set_right()` or `set_nonassoc()` will set higher precedence.
 	pub fn set_left(self, filename: &Arc<String>, n_line: usize, symbol_names: &str) -> ParserResult<Self>
-	{	self.set_associativity(filename, n_line, symbol_names, Associativity::LEFT)
+	{	self.add_associativity(filename, n_line, symbol_names, Associativity::LEFT)
 	}
 
-	///	Add the parser "%right NAME"
+	///	Add the parser "%right A B C".
 	pub fn set_right(self, filename: &Arc<String>, n_line: usize, symbol_names: &str) -> ParserResult<Self>
-	{	self.set_associativity(filename, n_line, symbol_names, Associativity::RIGHT)
+	{	self.add_associativity(filename, n_line, symbol_names, Associativity::RIGHT)
 	}
 
-	///	Add the parser "%nonassoc NAME".
+	///	Add the parser "%nonassoc A B C".
 	pub fn set_nonassoc(self, filename: &Arc<String>, n_line: usize, symbol_names: &str) -> ParserResult<Self>
-	{	self.set_associativity(filename, n_line, symbol_names, Associativity::NONASSOC)
+	{	self.add_associativity(filename, n_line, symbol_names, Associativity::NONASSOC)
 	}
 
-	fn set_associativity(mut self, filename: &Arc<String>, n_line: usize, symbol_names: &str, assoc: Associativity) -> ParserResult<Self>
+	fn add_associativity(mut self, filename: &Arc<String>, n_line: usize, symbol_names: &str, assoc: Associativity) -> ParserResult<Self>
 	{	for symbol_name in symbol_names.trim().split(|c: char| c.is_ascii_whitespace())
 		{	if !symbol_name.is_empty()
 			{	if symbol_name.find(|c: char| !c.is_ascii_alphanumeric() && c!='_').is_some()

@@ -16,7 +16,7 @@ fn main()
 		"	%trace {>> }
 			%extra_argument {()}
 			%left PLUS MINUS.
-			%left DIVIDE TIMES.
+			%left TIMES DIVIDE.
 			%token_type {f64}
 			%type Expr {super::Expr}
 			%type Exprs {Vec<super::Expr>}
