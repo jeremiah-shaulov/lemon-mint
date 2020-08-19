@@ -51,5 +51,9 @@ fn test_1()
 		".as_bytes()
 	).unwrap();
 
-	builder.try_into_lemon().unwrap();
+	let lemon = builder.try_into_lemon().unwrap();
+	let mut tmp = Vec::new();
+	lemon.gen_rust(&mut tmp).unwrap();
+	let mut tmp = Vec::new();
+	lemon.gen_log(&mut tmp, false, false).unwrap();
 }

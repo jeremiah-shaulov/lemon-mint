@@ -31,7 +31,7 @@ fn typename_to_string(value: String) -> String
 }
 
 fn is_terminal_name(s: &str) -> bool
-{	s.chars().position(|c| c.is_ascii_lowercase()).is_none()
+{	s.find(|c: char| c.is_ascii_lowercase()).is_none()
 }
 
 #[derive(Debug)]
@@ -139,11 +139,11 @@ impl Set
 /// Terminal or nonterminal symbol from the grammar.
 #[derive(Debug)]
 struct Symbol
-{	name: Rc<String>,              // Name of the symbol
+{	name: Arc<String>,             // Name of the symbol
 	index: usize,                  // Index number for this symbol
 	typ: SymbolType,               // Symbols are all either TERMINALS or NTs
 	sym_rules_arr: Vec<usize>,     // Array of rules of this (if an NT) (indices in rules array)
-	fallback: Option<Rc<RefCell<Symbol>>>, // fallback token in case this token doesn't parse
+	fallback_index: usize,         // fallback token in case this token doesn't parse
 	prec: i32,                     // Precedence if defined (-1 otherwise)
 	assoc: Associativity,          // Associativity if precedence is defined
 	firstset: Set,                 // First-set for all rules of this symbol
@@ -155,11 +155,11 @@ impl Symbol
 {	fn new(name: &str, index: usize) -> Self
 	{	let typ = if is_terminal_name(name) || name=="$" {SymbolType::TERMINAL} else {SymbolType::NONTERMINAL};
 		Self
-		{	name: Rc::new(String::new()),
+		{	name: Arc::new(String::new()),
 			index,
 			typ,
 			sym_rules_arr: Vec::new(),
-			fallback: None,
+			fallback_index: std::usize::MAX,
 			prec: -1,
 			assoc: Associativity::UNKNOWN,
 			firstset: Set::new(0),
@@ -175,34 +175,39 @@ impl PartialEq for Symbol
 	}
 }
 
+#[derive(Debug)]
+struct Rhs
+{	name: Arc<String>,
+	index: usize,
+	alias: String,
+}
+
 /// Each production rule in the grammar is stored in this structure.
 #[derive(Debug)]
 struct Rule
 {	rule_filename: Arc<String>,
 	rule_n_line: usize,            // Line number for the rule
-	lhs: Rc<RefCell<Symbol>>,      // Left-hand side of the rule
+	lhs: Arc<String>,              // Left-hand side of the rule
+	lhs_index: usize,              // Left-hand side of the rule (index in symbols)
 	lhs_start: bool,               // True if left-hand side is the start symbol
-	rhs: Vec<Rc<RefCell<Symbol>>>, // The RHS symbols
-	rhs_aliases: Vec<String>,      // An alias for each RHS symbol (NULL if none)
-	line: usize,                   // Line number at which code begins
+	rhs: Vec<Rhs>,                 // The RHS symbols
 	code: String,                  // The code executed when this rule is reduced
-	precsym: Option<Rc<RefCell<Symbol>>>, // Precedence symbol for this rule
+	precsym_index: usize,          // Precedence symbol for this rule (index in symbols)
 	index: usize,                  // An index number for this rule
 	can_reduce: bool,              // True if this rule is ever reduced
 	does_reduce: bool,             // Reduce actions occur after optimization
 }
 impl Rule
-{	fn new(rule_filename: &Arc<String>, rule_n_line: usize, lhs: &Rc<RefCell<Symbol>>, index: usize, code: String) -> Self
+{	fn new(rule_filename: &Arc<String>, rule_n_line: usize, lhs: &Arc<String>, lhs_index: usize, index: usize, code: String) -> Self
 	{	Self
 		{	rule_filename: Arc::clone(rule_filename),
 			rule_n_line,
-			lhs: Rc::clone(lhs),
+			lhs: Arc::clone(lhs),
+			lhs_index,
 			lhs_start: false,
 			rhs: Vec::new(),
-			rhs_aliases: Vec::new(),
-			line: 0,
 			code,
-			precsym: None,
+			precsym_index: std::usize::MAX,
 			index,
 			can_reduce: false,
 			does_reduce: false,
@@ -212,9 +217,9 @@ impl Rule
 impl fmt::Display for Rule
 {	/// Write text on "out" that describes the rule
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
-	{	write!(f, "{} ::=", self.lhs.borrow().name)?;
-		for sp in self.rhs.iter()
-		{	write!(f, " {}", sp.borrow().name)?;
+	{	write!(f, "{} ::=", self.lhs)?;
+		for sp in &self.rhs
+		{	write!(f, " {}", sp.name)?;
 		}
 		Ok(())
 	}
@@ -319,46 +324,46 @@ enum StateOrRule
 #[derive(Debug)]
 struct Action
 {	id: i32,
-	sp: Rc<RefCell<Symbol>>,              // The look-ahead symbol
+	symbol_index: usize,     // The look-ahead symbol
 	typ: ActionType,
 	x: StateOrRule,
-	sp_opt: Option<Rc<RefCell<Symbol>>>, // ActionType::ShiftReduce optimization to this symbol
+	symbol_index_opt: usize, // ActionType::ShiftReduce optimization to this symbol
 }
 impl Action
-{	fn new_state(id: i32, sp: &Rc<RefCell<Symbol>>, n_state: usize) -> Action
+{	fn new_state(id: i32, symbol_index: usize, n_state: usize) -> Action
 	{	Action
 		{	id,
-			sp: Rc::clone(sp),
+			symbol_index,
 			typ: ActionType::Shift,
 			x: StateOrRule::State(n_state),
-			sp_opt: None,
+			symbol_index_opt: std::usize::MAX,
 		}
 	}
 
-	fn new_rule(id: i32, symbol: &Rc<RefCell<Symbol>>, typ: ActionType, n_rule: usize) -> Action
+	fn new_rule(id: i32, symbol_index: usize, typ: ActionType, n_rule: usize) -> Action
 	{	Action
 		{	id,
-			sp: Rc::clone(symbol),
+			symbol_index,
 			typ,
 			x: StateOrRule::Rule(n_rule),
-			sp_opt: None,
+			symbol_index_opt: std::usize::MAX,
 		}
 	}
 
-	fn new_empty_rule(id: i32, symbol: &Rc<RefCell<Symbol>>, typ: ActionType) -> Action
+	fn new_empty_rule(id: i32, symbol_index: usize, typ: ActionType) -> Action
 	{	Action
 		{	id,
-			sp: Rc::clone(symbol),
+			symbol_index,
 			typ,
 			x: StateOrRule::EmptyRule,
-			sp_opt: None,
+			symbol_index_opt: std::usize::MAX,
 		}
 	}
 }
 impl cmp::Ord for Action
 {	fn cmp(&self, other: &Self) -> cmp::Ordering
-	{	let index = self.sp.borrow().index;
-		let other_index = other.sp.borrow().index;
+	{	let index = self.symbol_index;
+		let other_index = other.symbol_index;
 		let mut res = index.cmp(&other_index);
 		if res == Ordering::Equal
 		{	res = self.typ.cmp(&other.typ);
@@ -676,7 +681,7 @@ impl ActTab
 
 #[derive(Debug)]
 struct SymbolsBuilder
-{	symbols_map: HashMap<Rc<String>, Rc<RefCell<Symbol>>>,
+{	symbols_map: HashMap<Arc<String>, Symbol>,
 	n_terminals: usize,
 	n_nonterminals: usize,
 }
@@ -688,37 +693,44 @@ impl SymbolsBuilder
 			n_nonterminals: 0,
 		};
 		if !empty
-		{	this.add(Rc::new("$".to_string()));
+		{	this.add(&Arc::new("$".to_string()));
 		}
 		this
 	}
 
 	/// Return a pointer to the (terminal or nonterminal) symbol "symbol_name". Create a new symbol if this is the first time "x" has been seen.
-	pub fn add(&mut self, symbol_name: Rc<String>) -> Rc<RefCell<Symbol>>
-	{	if let Some(symbol) = self.symbols_map.get(&symbol_name)
-		{	let symbol = Rc::clone(symbol);
-			return symbol;
-		}
-		let index = if is_terminal_name(symbol_name.as_ref()) || symbol_name.as_ref()=="$"
-		{	self.n_terminals += 1;
-			self.n_terminals - 1
+	pub fn add(&mut self, symbol_name: &Arc<String>) -> usize
+	{	if let Some(symbol) = self.symbols_map.get(symbol_name)
+		{	symbol.index
 		}
 		else
-		{	self.n_nonterminals += 1;
-			self.n_nonterminals - 1
-		};
-		let symbol = Rc::new(RefCell::new(Symbol::new(&symbol_name, index))); // need to set the name later in into_symbols()
-		self.symbols_map.insert(symbol_name, Rc::clone(&symbol));
-		symbol
+		{	let index = if is_terminal_name(symbol_name.as_ref()) || symbol_name.as_ref()=="$"
+			{	self.n_terminals += 1;
+				self.n_terminals - 1
+			}
+			else
+			{	self.n_nonterminals += 1;
+				self.n_nonterminals - 1
+			};
+			let symbol = Symbol::new(symbol_name, index); // need to set the name later in into_symbols()
+			self.symbols_map.insert(Arc::clone(symbol_name), symbol);
+			index
+		}
 	}
 
-	/// Return an array of pointers to all data in the table.
-	/// The array is obtained from malloc.  Return NULL if memory allocation problems, or if the array is empty.
-	pub fn into_symbols(mut self, start_name: &String, nonterminal_types: HashMap<String, StringInFile>, precedence: HashMap<String, PrecedenceInFile>) -> ParserResult<Symbols>
+	pub fn get(&self, symbol_name: &Arc<String>) -> &Symbol
+	{	&self.symbols_map[symbol_name]
+	}
+
+	pub fn get_mut(&mut self, symbol_name: &Arc<String>) -> &mut Symbol
+	{	self.symbols_map.get_mut(symbol_name).unwrap()
+	}
+
+	pub fn into_symbols(mut self, start_name: &String, nonterminal_types: HashMap<String, StringInFile>, precedence: HashMap<String, PrecedenceInFile>, rules: &mut Vec<Rule>) -> ParserResult<Symbols>
 	{	// nonterminal_types
 		for (symbol_name, symbol_type) in nonterminal_types
-		{	if let Some(symbol) = self.symbols_map.get(&symbol_name)
-			{	symbol.borrow_mut().data_type = symbol_type.string;
+		{	if let Some(symbol) = self.symbols_map.get_mut(&symbol_name)
+			{	symbol.data_type = symbol_type.string;
 			}
 			else
 			{	return Err(LemonMintError::new(&symbol_type.filename, symbol_type.n_line, format!("No such nonterminal symbol when defining symbol type: \"{}\"", symbol_name)));
@@ -726,62 +738,66 @@ impl SymbolsBuilder
 		}
 		// precedence
 		for (symbol_name, precedence) in precedence
-		{	if let Some(symbol) = self.symbols_map.get(&symbol_name)
-			{	let mut symbol = symbol.borrow_mut();
-				symbol.prec = precedence.precedence;
+		{	if let Some(symbol) = self.symbols_map.get_mut(&symbol_name)
+			{	symbol.prec = precedence.precedence;
 				symbol.assoc = precedence.assoc;
 			}
 			else
 			{	return Err(LemonMintError::new(&precedence.filename, precedence.n_line, format!("No such terminal symbol \"{}\" when defining precedence", symbol_name)));
 			}
 		}
+		// convert rules
+		for rule in rules
+		{	rule.lhs_index += self.n_terminals;
+			for rhs in rule.rhs.iter_mut()
+			{	if self.symbols_map[&rhs.name].typ == SymbolType::NONTERMINAL
+				{	rhs.index += self.n_terminals;
+				}
+			}
+		}
 		// into Symbols
 		let n_symbols = self.symbols_map.len();
-		let default_symbol = self.add(Rc::new("{default}".to_string()));
-		let default_symbol_index = default_symbol.borrow().index + self.n_terminals;
+		let default_symbol = self.add(&Arc::new("{default}".to_string()));
+		let default_symbol_index = default_symbol + self.n_terminals;
 		let mut start_symbol_index = std::usize::MAX;
 		let mut error_symbol_index = std::usize::MAX;
 		let mut array = Vec::with_capacity(self.symbols_map.len());
-		for (symbol_name, symbol) in self.symbols_map
-		{	{	let mut symbol_mut = symbol.borrow_mut();
-				if symbol_mut.typ == SymbolType::NONTERMINAL
-				{	symbol_mut.index += self.n_terminals;
-				}
-				if *symbol_name == *start_name
-				{	start_symbol_index = symbol_mut.index;
+		for (symbol_name, mut symbol) in self.symbols_map
+		{	if symbol.typ == SymbolType::NONTERMINAL
+			{	symbol.index += self.n_terminals;
+				if symbol_name.as_ref() == start_name
+				{	start_symbol_index = symbol.index;
 				}
 				else if symbol_name.as_ref() == "error"
-				{	error_symbol_index = symbol_mut.index;
+				{	error_symbol_index = symbol.index;
 				}
-				symbol_mut.name = symbol_name;
 			}
+			else if symbol.index == 0
+			{	symbol.typ = SymbolType::NONTERMINAL; // like in lemon
+			}
+			symbol.name = Arc::clone(&symbol_name);
 			array.push(symbol);
 		}
-		array.sort_by(|a, b| a.borrow().index.cmp(&b.borrow().index));
-		array[0].borrow_mut().typ = SymbolType::NONTERMINAL; // like in lemon
+		array.sort_by(|a, b| a.index.cmp(&b.index));
 		Ok(Symbols {array, n_symbols, n_terminals: self.n_terminals, default_symbol_index, start_symbol_index, error_symbol_index})
 	}
 }
 
 #[derive(Debug)]
 struct Symbols
-{	pub array: Vec<Rc<RefCell<Symbol>>>, // Sorted array of all symbols
+{	pub array: Vec<Symbol>, // Sorted array of all symbols
 	pub n_symbols: usize,                // Number of terminal and nonterminal symbols
 	pub n_terminals: usize,              // Number of terminal symbols
-	start_symbol_index: usize,
-	default_symbol_index: usize,
-	error_symbol_index: usize,
+	pub start_symbol_index: usize,
+	pub default_symbol_index: usize,
+	pub error_symbol_index: usize,
 }
 impl Symbols
-{	pub fn get_start_symbol(&self) -> &Rc<RefCell<Symbol>>
+{	pub fn get_start_symbol(&self) -> &Symbol
 	{	&self.array[self.start_symbol_index]
 	}
 
-	pub fn get_default_symbol(&self) -> &Rc<RefCell<Symbol>>
-	{	&self.array[self.default_symbol_index]
-	}
-
-	pub fn get_error_symbol(&self) -> Option<&Rc<RefCell<Symbol>>>
+	pub fn get_error_symbol(&self) -> Option<&Symbol>
 	{	self.array.get(self.error_symbol_index)
 	}
 }
@@ -796,7 +812,7 @@ struct States
 struct StatesBuilder;
 impl StatesBuilder
 {	/// Compute all LR(0) states for the grammar. Links are added to between some states so that the LR(1) follow sets can be computed later.
-	pub fn build(rules: &mut Vec<Rule>, start: &Rc<RefCell<Symbol>>, n_terminals: usize, actions_enum: &mut i32) -> ParserResult<States>
+	pub fn build(symbols: &Symbols, rules: &mut Vec<Rule>, start: &Symbol, n_terminals: usize, actions_enum: &mut i32) -> ParserResult<States>
 	{	let mut configs_basis_keys_arr = Vec::new();
 		let mut configs_basis_arr = Vec::new();
 		let mut configs_arr = Vec::new();
@@ -804,14 +820,14 @@ impl StatesBuilder
 		let mut states_map = HashMap::new();
 
 		// The basis configuration set for the first state is all rules which have the start symbol as their left-hand side
-		for n_rule in start.borrow().sym_rules_arr.iter()
+		for n_rule in start.sym_rules_arr.iter()
 		{	rules[*n_rule].lhs_start = true;
 			Self::configlist_add(rules, &mut configs_basis_keys_arr, &mut configs_basis_arr, &mut configs_arr, &mut configs_map, n_terminals, *n_rule, 0, true).borrow_mut().fws.add(0);
 		}
 
 		// Compute the first state. All other states will be computed automatically during the computation of the first one.
 		// The returned pointer to the first state is not used.
-		Self::getstate(rules, &mut configs_basis_keys_arr, &mut configs_basis_arr, &mut configs_arr, &mut configs_map, &mut states_map, n_terminals, actions_enum)?;
+		Self::getstate(symbols, rules, &mut configs_basis_keys_arr, &mut configs_basis_arr, &mut configs_arr, &mut configs_map, &mut states_map, n_terminals, actions_enum)?;
 
 		let mut states = States {array: Vec::with_capacity(states_map.len()), n_no_tail: 0}; // Table of states sorted by state number
 		for (_, elem) in states_map
@@ -824,7 +840,8 @@ impl StatesBuilder
 
 	/// Return a pointer to a state which is described by the configuration list which has been built from calls to configlist_add.
 	fn getstate
-	(	rules: &Vec<Rule>,
+	(	symbols: &Symbols,
+		rules: &Vec<Rule>,
 		configs_basis_keys_arr: &mut Vec<ConfigKey>,
 		configs_basis_arr: &mut Vec<Rc<RefCell<Config>>>,
 		configs_arr: &mut Vec<Rc<RefCell<Config>>>,
@@ -869,7 +886,7 @@ impl StatesBuilder
 		}
 		else
 		{	// This really is a new state.  Construct all the details
-			Self::configlist_closure(rules, configs_basis_keys_arr, configs_basis_arr, configs_arr, configs_map, n_terminals)?; // Compute the configuration closure
+			Self::configlist_closure(symbols, rules, configs_basis_keys_arr, configs_basis_arr, configs_arr, configs_map, n_terminals)?; // Compute the configuration closure
 			let n_state = states_map.len();
 			let mut configurations = mem::replace(configs_arr, Vec::new());
 			configurations.sort(); // Sort the configuration closure
@@ -880,7 +897,7 @@ impl StatesBuilder
 			);
 			let stp = Rc::new(RefCell::new(stp));
 			states_map.insert(basis_keys, Rc::clone(&stp)); // Add to the state table
-			let actions = Self::buildshifts(rules, configs_basis_keys_arr, configs_basis_arr, configs_arr, configs_map, states_map, n_terminals, actions_enum, &stp)?; // Recursively compute successor states
+			let actions = Self::buildshifts(symbols, rules, configs_basis_keys_arr, configs_basis_arr, configs_arr, configs_map, states_map, n_terminals, actions_enum, &stp)?; // Recursively compute successor states
 			stp.borrow_mut().actions = actions;
 			Ok(n_state)
 		}
@@ -888,7 +905,8 @@ impl StatesBuilder
 
 	/// Construct all successor states to the given state.  A "successor" state is any state which can be reached by a shift action.
 	fn buildshifts
-	(	rules: &Vec<Rule>,
+	(	symbols: &Symbols,
+		rules: &Vec<Rule>,
 		configs_basis_keys_arr: &mut Vec<ConfigKey>,
 		configs_basis_arr: &mut Vec<Rc<RefCell<Config>>>,
 		configs_arr: &mut Vec<Rc<RefCell<Config>>>,
@@ -916,14 +934,14 @@ impl StatesBuilder
 				configs_basis_arr.clear();
 				configs_arr.clear();
 				configs_map.clear();
-				let sp = Rc::clone(&rules[n_rule].rhs[dot]); // Symbol following the dot in configuration "cfp"
+				let sp = rules[n_rule].rhs[dot].index; // Symbol following the dot in configuration "cfp"
 
 				// For every configuration in the state "stp" which has the symbol "sp" following its dot, add the same configuration to the basis set under
 				// construction but with the dot shifted one symbol to the right.
 				for bcfp in stp.borrow().configurations.iter().skip(i)
 				{	if !bcfp.borrow().status_is_complete && bcfp.borrow().dot<rules[bcfp.borrow().n_rule].rhs.len() // !Already used && !Can't shift this one
-					{	let bsp = Rc::clone(&rules[bcfp.borrow().n_rule].rhs[bcfp.borrow().dot]); // Symbol following the dot in configuration "bcfp"
-						if *bsp.borrow() == *sp.borrow() // Must be same as for "cfp"
+					{	let bsp = rules[bcfp.borrow().n_rule].rhs[bcfp.borrow().dot].index; // Symbol following the dot in configuration "bcfp"
+						if bsp == sp // Must be same as for "cfp"
 						{	bcfp.borrow_mut().status_is_complete = true; // Mark this config as used
 							let newcfg = Self::configlist_add(rules, configs_basis_keys_arr, configs_basis_arr, configs_arr, configs_map, n_terminals, bcfp.borrow().n_rule, bcfp.borrow().dot+1, true);
 							newcfg.borrow_mut().bplp.push(Rc::clone(bcfp));
@@ -932,10 +950,10 @@ impl StatesBuilder
 				}
 
 				// Get a pointer to the state described by the basis configuration set constructed in the preceding loop
-				let n_state = Self::getstate(rules, configs_basis_keys_arr, configs_basis_arr, configs_arr, configs_map, states_map, n_terminals, actions_enum)?; // A pointer to a successor state
+				let n_state = Self::getstate(symbols, rules, configs_basis_keys_arr, configs_basis_arr, configs_arr, configs_map, states_map, n_terminals, actions_enum)?; // A pointer to a successor state
 
 				// The state "newstp" is reached from the state "stp" by a shift action on the symbol "sp"
-				actions.insert(0, Rc::new(RefCell::new(Action::new_state(*actions_enum, &sp, n_state)))); // TODO: maybe push(), not insert()
+				actions.insert(0, Rc::new(RefCell::new(Action::new_state(*actions_enum, sp, n_state)))); // TODO: maybe push(), not insert()
 				*actions_enum += 1;
 			}
 		}
@@ -975,7 +993,8 @@ impl StatesBuilder
 
 	/// Compute the closure of the configuration list
 	fn configlist_closure
-	(	rules: &Vec<Rule>,
+	(	symbols: &Symbols,
+		rules: &Vec<Rule>,
 		configs_basis_keys_arr: &mut Vec<ConfigKey>,
 		configs_basis_arr: &mut Vec<Rc<RefCell<Config>>>,
 		configs_arr: &mut Vec<Rc<RefCell<Config>>>,
@@ -989,23 +1008,23 @@ impl StatesBuilder
 				(&rules[config.n_rule], config.dot)
 			};
 			if dot < rule.rhs.len()
-			{	let sp = &rule.rhs[dot];
-				if sp.borrow().typ == SymbolType::NONTERMINAL
-				{	if sp.borrow().sym_rules_arr.is_empty() && sp.borrow().name.as_ref()!="error"
-					{	return Err(LemonMintError::new(&rule.rule_filename, rule.line, format!("Nonterminal \"{}\" has no rules.", &sp.borrow().name)));
+			{	let sp = &symbols.array[rule.rhs[dot].index];
+				if sp.typ == SymbolType::NONTERMINAL
+				{	if sp.index!=symbols.error_symbol_index && sp.sym_rules_arr.is_empty()
+					{	return Err(LemonMintError::new(&rule.rule_filename, rule.rule_n_line, format!("Nonterminal \"{}\" has no rules.", sp.name)));
 					}
-					for new_n_rule in sp.borrow().sym_rules_arr.iter()
+					for new_n_rule in sp.sym_rules_arr.iter()
 					{	let newcfp = Self::configlist_add(rules, configs_basis_keys_arr, configs_basis_arr, configs_arr, configs_map, n_terminals, *new_n_rule, 0, false);
 						let mut found = false;
 						for i in dot+1 .. rule.rhs.len()
-						{	let xsp = &rule.rhs[i];
-							if xsp.borrow().typ == SymbolType::TERMINAL
-							{	newcfp.borrow_mut().fws.add(xsp.borrow().index);
+						{	let xsp = &symbols.array[rule.rhs[i].index];
+							if xsp.typ == SymbolType::TERMINAL
+							{	newcfp.borrow_mut().fws.add(xsp.index);
 								found = true;
 								break;
 							}
-							newcfp.borrow_mut().fws.intersect(&xsp.borrow().firstset);
-							if !xsp.borrow().lambda
+							newcfp.borrow_mut().fws.intersect(&xsp.firstset);
+							if !xsp.lambda
 							{	found = true;
 								break;
 							}
@@ -1159,12 +1178,12 @@ impl LemonMintBuilder
 	/// Those rules which have a precedence symbol coded in the input grammar using the `"[symbol]"` construct will already have the
 	/// rule->precsym field filled.  Other rules take as their precedence symbol the first RHS symbol with a defined precedence.  If there
 	/// are not RHS symbols with a defined precedence, the precedence symbol field is left blank.
-	fn find_rule_precedences(rules: &mut Vec<Rule>)
+	fn find_rule_precedences(symbols: &mut Symbols, rules: &mut Vec<Rule>)
 	{	for rule in rules.iter_mut()
-    	{	if rule.precsym.is_none()
-			{	for sp in rule.rhs.iter()
-				{	if sp.borrow().prec >= 0
-					{	rule.precsym = Some(Rc::clone(sp));
+    	{	if rule.precsym_index == std::usize::MAX
+			{	for sp in &rule.rhs
+				{	if symbols.array[sp.index].prec >= 0
+					{	rule.precsym_index = sp.index;
 						break;
 					}
 				}
@@ -1174,11 +1193,11 @@ impl LemonMintBuilder
 
 	/// Find all nonterminals which will generate the empty string.  Then go back and compute the first sets of every nonterminal.
 	/// The first set is the set of all terminal symbols which can begin a string generated by that nonterminal.
-	fn find_first_sets(&self, symbols: &Symbols, rules: &Vec<Rule>)
-	{	for (i, symbol) in symbols.array[0 .. symbols.n_symbols].iter().enumerate()
-		{	symbol.borrow_mut().lambda = false;
+	fn find_first_sets(&self, symbols: &mut Symbols, rules: &mut Vec<Rule>)
+	{	for (i, symbol) in symbols.array[0 .. symbols.n_symbols].iter_mut().enumerate()
+		{	symbol.lambda = false;
 			if i >= symbols.n_terminals
-			{	symbol.borrow_mut().firstset.set_size(symbols.n_terminals + 1);
+			{	symbol.firstset.set_size(symbols.n_terminals + 1);
 			}
 		}
 
@@ -1188,14 +1207,15 @@ impl LemonMintBuilder
 		{	progress = false;
 'l:			for rule in rules.iter()
 			{	let rule = rule;
-				if !rule.lhs.borrow().lambda
-				{	for sp in rule.rhs.iter()
-					{	assert!(sp.borrow().typ==SymbolType::NONTERMINAL || !sp.borrow().lambda);
-						if !sp.borrow().lambda
+				if !symbols.array[rule.lhs_index].lambda
+				{	for sp in &rule.rhs
+					{	let sp = &symbols.array[sp.index];
+						assert!(sp.typ==SymbolType::NONTERMINAL || !sp.lambda);
+						if !sp.lambda
 						{	continue 'l;
 						}
 					}
-					rule.lhs.borrow_mut().lambda = true;
+					symbols.array[rule.lhs_index].lambda = true;
 					progress = true;
 				}
 			}
@@ -1206,24 +1226,25 @@ impl LemonMintBuilder
 		while progress
 		{	progress = false;
 			for rule in rules.iter()
-			{	let s1 = &rule.lhs;
-				for s2 in rule.rhs.iter()
-				{	if s2.borrow().typ == SymbolType::TERMINAL
-					{	if s1.borrow_mut().firstset.add(s2.borrow().index)
+			{	for rhs in &rule.rhs
+				{	if symbols.array[rhs.index].typ == SymbolType::TERMINAL
+					{	if symbols.array[rule.lhs_index].firstset.add(rhs.index)
 						{	progress = true;
 						}
 						break;
 					}
-					else if *s1.borrow() == *s2.borrow()
-					{	if !s1.borrow().lambda
+					else if rule.lhs_index == rhs.index
+					{	if !symbols.array[rule.lhs_index].lambda
 						{	break;
 						}
 					}
 					else
-					{	if s1.borrow_mut().firstset.intersect(&s2.borrow().firstset)
+					{	let set = mem::replace(&mut symbols.array[rhs.index].firstset, Set::new(0));
+						if symbols.array[rule.lhs_index].firstset.intersect(&set)
 						{	progress = true;
 						}
-						if !s2.borrow().lambda
+						mem::replace(&mut symbols.array[rhs.index].firstset, set);
+						if !symbols.array[rhs.index].lambda
 						{	break;
 						}
 					}
@@ -1291,11 +1312,11 @@ impl LemonMintBuilder
     ///   use precedence to resolve the conflict.
     ///
     /// If either action is a SHIFT, then it must be apx.  This function won't work if apx->type==REDUCE and apy->type==SHIFT.
-    fn resolve_conflict(rules: &mut Vec<Rule>, apx: &Rc<RefCell<Action>>, apy: &Rc<RefCell<Action>>) -> usize
+    fn resolve_conflict(symbols: &Symbols, rules: &mut Vec<Rule>, apx: &Rc<RefCell<Action>>, apy: &Rc<RefCell<Action>>) -> usize
 	{	let mut errcnt = 0;
 		let mut apx = apx.borrow_mut();
 		let mut apy = apy.borrow_mut();
-		assert_eq!(apx.sp, apy.sp);  // Otherwise there would be no conflict
+		assert_eq!(apx.symbol_index, apy.symbol_index);  // Otherwise there would be no conflict
 		let mut apx_typ = apx.typ;
 		let mut apy_typ = apy.typ;
 		if apx_typ==ActionType::Shift && apy_typ==ActionType::Shift
@@ -1303,12 +1324,11 @@ impl LemonMintBuilder
 			errcnt += 1;
 		}
 		if apx_typ==ActionType::Shift && apy_typ==ActionType::Reduce
-		{	let spx = &apx.sp;
-			let spx = spx.borrow();
+		{	let spx = &symbols.array[apx.symbol_index];
 			if let StateOrRule::Rule(n_rule) = apy.x
-			{	let spy = &rules[n_rule].precsym;
-				if let Some(spy) = spy
-				{	let spy = spy.borrow();
+			{	let spy = rules[n_rule].precsym_index;
+				if spy != std::usize::MAX
+				{	let spy = &symbols.array[spy];
 					if spx.prec<0 || spy.prec<0
 					{	// Not enough precedence information.
 						apy_typ = ActionType::SrConflict;
@@ -1341,12 +1361,12 @@ impl LemonMintBuilder
 		else if apx_typ==ActionType::Reduce && apy_typ==ActionType::Reduce
 		{	if let StateOrRule::Rule(n_rule_x) = apx.x
 			{	if let StateOrRule::Rule(n_rule_y) = apy.x
-				{	let spx = &rules[n_rule_x].precsym;
-					let spy = &rules[n_rule_y].precsym;
-					if let Some(spx) = spx
-					{	if let Some(spy) = spy
-						{	let spx = spx.borrow();
-							let spy = spy.borrow();
+				{	let spx = rules[n_rule_x].precsym_index;
+					let spy = rules[n_rule_y].precsym_index;
+					if spx != std::usize::MAX
+					{	if spy != std::usize::MAX
+						{	let spx = &symbols.array[spx];
+							let spy = &symbols.array[spy];
 							if spx.prec<0 || spy.prec<0 || spx.prec==spy.prec
 							{	apy_typ = ActionType::RrConflict;
 								errcnt += 1;
@@ -1401,7 +1421,7 @@ impl LemonMintBuilder
     			{	for (j, symbol) in symbols.array.iter().take(symbols.n_terminals).enumerate()
     				{	if cfp.borrow().fws.contains(j)
     					{	// Add a reduce action to the state "stp" which will reduce by the rule "cfp->rule" if the lookahead symbol is "symbols[j]"
-    						stp.actions.push(Rc::new(RefCell::new(Action::new_rule(self.actions_enum, symbol, ActionType::Reduce, cfp.borrow().n_rule))));
+    						stp.actions.push(Rc::new(RefCell::new(Action::new_rule(self.actions_enum, symbol.index, ActionType::Reduce, cfp.borrow().n_rule))));
 							self.actions_enum += 1;
     					}
     				}
@@ -1411,7 +1431,7 @@ impl LemonMintBuilder
 
     	// Add the accepting token
     	// Add to the first state (which is always the starting state of the finite state machine) an action to ACCEPT if the lookahead is the start nonterminal.
-    	states.array[0].actions.push(Rc::new(RefCell::new(Action::new_empty_rule(self.actions_enum, symbols.get_start_symbol(), ActionType::Accept))));
+    	states.array[0].actions.push(Rc::new(RefCell::new(Action::new_empty_rule(self.actions_enum, symbols.start_symbol_index, ActionType::Accept))));
 		self.actions_enum += 1;
 
     	// Resolve conflicts
@@ -1419,10 +1439,10 @@ impl LemonMintBuilder
     	{	if stp.actions.len() != 0
     		{	stp.actions.sort();
     			for action in stp.actions.windows(2)
-				{	if action[0].borrow().sp == action[1].borrow().sp
+				{	if action[0].borrow().symbol_index == action[1].borrow().symbol_index
     				{	// The two actions "action[0]" and "action[1]" have the same lookahead.
     					// Figure out which one should be used
-    					self.n_conflicts += Self::resolve_conflict(rules, &action[0], &action[1]);
+    					self.n_conflicts += Self::resolve_conflict(symbols, rules, &action[0], &action[1]);
     				}
 				}
     		}
@@ -1456,7 +1476,7 @@ impl LemonMintBuilder
 	/// Reduce the size of the action tables, if possible, by making use of defaults.
 	///
 	/// In this version, we take the most frequent REDUCE action and make it the default.
-	fn compress_tables(&self, symbols: &Symbols, rules: &Vec<Rule>, states: &mut States, default_symbol: &Rc<RefCell<Symbol>>)
+	fn compress_tables(&self, symbols: &Symbols, rules: &Vec<Rule>, states: &mut States, default_symbol_index: usize)
 	{	for state in states.array.iter_mut()
 		{	let mut n_best = 0;
 			let mut r_best = std::usize::MAX;
@@ -1500,7 +1520,7 @@ impl LemonMintBuilder
 				{	if let StateOrRule::Rule(n_rule) = action.x
 					{	if rules[n_rule].index == r_best
 						{	if !found
-							{	action.sp = Rc::clone(default_symbol);
+							{	action.symbol_index = default_symbol_index;
 								found = true;
 							}
 							else
@@ -1558,12 +1578,12 @@ impl LemonMintBuilder
 							{	let rp = &rules[n_rule];
 								if rp.code.is_empty() && rp.rhs.len()==1
 								{	// Only apply this optimization to non-terminals.  It would be OK to apply it to terminal symbols too, but that makes the parser tables larger.
-									if action.sp.borrow().index >= symbols.n_terminals
+									if action.symbol_index >= symbols.n_terminals
 									{	// If we reach this point, it means the optimization can be applied
 										ap2 = stp.actions.iter().find
-										(		|a|
+										(	|a|
 											{	let a = a.borrow();
-												a.id!= action.id && a.sp.borrow().index==rp.lhs.borrow().index
+												a.id!= action.id && a.symbol_index==rp.lhs_index
 											}
 										);
 										assert!(ap2.is_some());
@@ -1576,7 +1596,7 @@ impl LemonMintBuilder
 					if let Some(ap2) = ap2
 					{	let mut action = action.borrow_mut();
 						let ap2 = ap2.borrow();
-						action.sp_opt = Some(Rc::clone(&ap2.sp));
+						action.symbol_index_opt = ap2.symbol_index;
 						action.typ = ap2.typ;
 						action.x = ap2.x;
 					}
@@ -1600,7 +1620,7 @@ impl LemonMintBuilder
 			{	// Since a SHIFT is inherient after a prior REDUCE, convert any SHIFTREDUCE action with a nonterminal on the LHS into a simple REDUCE action:
 				match action.x
 				{	StateOrRule::Rule(n_rule) =>
-					{	if action.sp.borrow().index >= symbols.n_terminals
+					{	if action.symbol_index >= symbols.n_terminals
 						{	self.min_reduce + n_rule
 						}
 						else
@@ -1639,10 +1659,10 @@ impl LemonMintBuilder
 			{	let n_action = self.compute_action(symbols, action);
 				if n_action != std::usize::MAX
 				{	let action = action.borrow();
-					if action.sp.borrow().index < symbols.n_terminals
+					if action.symbol_index < symbols.n_terminals
 					{	stp.n_token_act += 1;
 					}
-					else if action.sp.borrow().index < symbols.n_symbols
+					else if action.symbol_index < symbols.n_symbols
 					{	stp.n_nt_act += 1;
 					}
 					else
@@ -1729,9 +1749,6 @@ impl LemonMintBuilder
 	{	let mut used = Vec::new();   // True for each RHS element which is used
 		used.resize(rule.rhs.len(), false);
 
-		if rule.code.is_empty()
-		{	rule.line = rule.rule_n_line;
-		}
 		let mut it = rule.code.chars();
 		let mut it_prev = it.clone();
 
@@ -1741,8 +1758,8 @@ impl LemonMintBuilder
 				if ident.len() > 1
 				{	it.nth(ident.chars().count() - 2).unwrap();
 				}
-				for i in 0 .. rule.rhs.len()
-				{	if rule.rhs_aliases.get(i) == Some(&ident)
+				for (i, rhs) in rule.rhs.iter().enumerate()
+				{	if rhs.alias == ident
 					{	used[i] = true;
 						break;
 					}
@@ -1752,18 +1769,15 @@ impl LemonMintBuilder
 		}
 
 		// Generate warnings for RHS symbols which aliases are not used in the reduce code
-		for i in 0 .. rule.rhs.len()
-		{	if i < rule.rhs_aliases.len()
-			{	let alias: &str = &rule.rhs_aliases[i];
-				if !alias.is_empty() && !used[i]
-				{	return Err
-					(	LemonMintError::new
-						(	&rule.rule_filename,
-							rule.rule_n_line,
-							format!("Label {} for \"{}({})\" is never used.", alias, rule.rhs[i].borrow().name, alias)
-						)
-					);
-				}
+		for (i, rhs) in rule.rhs.iter().enumerate()
+		{	if !rhs.alias.is_empty() && !used[i]
+			{	return Err
+				(	LemonMintError::new
+					(	&rule.rule_filename,
+						rule.rule_n_line,
+						format!("Label {} for \"{}({})\" is never used.", rhs.alias, rhs.name, rhs.alias)
+					)
+				);
 			}
 		}
 
@@ -1777,7 +1791,7 @@ impl LemonMintBuilder
 	** union, also set the ".dtnum" field of every terminal and nonterminal
 	** symbol.
 	*/
-	fn get_minor_type(&self, symbols: &Symbols) -> Vec<(String, String)>
+	fn get_minor_type(&self, symbols: &mut Symbols) -> Vec<(String, String)>
 	{	// Allocate and initialize types[] and allocate stddt[]
 		let arraysize = symbols.n_symbols * 2; // Size of the "types" array
 		let mut types = Vec::new(); // A hash table of datatypes
@@ -1786,9 +1800,8 @@ impl LemonMintBuilder
 		// Build a hash table of datatypes. The ".dtnum" field of each symbol is filled in with the hash index plus 1.  A ".dtnum" value of 0 is
 		// used for terminal symbols.  If there is no %default_type defined then 0 is also used as the .dtnum value for nonterminals which do not specify
 		// a datatype using the %type directive.
-'l:		for (i, sp) in symbols.array[0 .. symbols.n_symbols].iter().enumerate()
-		{	let mut sp = &mut *sp.borrow_mut();
-			if i == symbols.error_symbol_index
+'l:		for (i, sp) in symbols.array[0 .. symbols.n_symbols].iter_mut().enumerate()
+		{	if i == symbols.error_symbol_index
 			{	sp.dtnum = arraysize+1;
 				continue;
 			}
@@ -1835,7 +1848,7 @@ impl LemonMintBuilder
 			i += 1;
 		}
 		if let Some(symbol) = symbols.get_error_symbol()
-		{	minor_type.push((format!("Symbol{}", symbol.borrow().dtnum), "i32".to_string()));
+		{	minor_type.push((format!("Symbol{}", symbol.dtnum), "i32".to_string()));
 		}
 
 		// Done
@@ -1866,10 +1879,10 @@ impl LemonMintBuilder
 			let stp = &mut states.array[ax_i.n_state];
 			if ax_i.is_tkn
 			{	for action in stp.actions.iter()
-				{	if action.borrow().sp.borrow().index < symbols.n_terminals
+				{	if action.borrow().symbol_index < symbols.n_terminals
 					{	let n_action = self.compute_action(symbols, action);
 						if n_action != std::usize::MAX
-						{	acttab.acttab_action(action.borrow().sp.borrow().index, n_action);
+						{	acttab.acttab_action(action.borrow().symbol_index, n_action);
 						}
 					}
 				}
@@ -1883,10 +1896,10 @@ impl LemonMintBuilder
 			}
 			else
 			{	for action in stp.actions.iter()
-				{	if action.borrow().sp.borrow().index >= symbols.n_terminals && action.borrow().sp.borrow().index != symbols.n_symbols
+				{	if action.borrow().symbol_index >= symbols.n_terminals && action.borrow().symbol_index != symbols.n_symbols
 					{	let n_action = self.compute_action(symbols, action);
 						if n_action != std::usize::MAX
-						{	acttab.acttab_action(action.borrow().sp.borrow().index, n_action);
+						{	acttab.acttab_action(action.borrow().symbol_index, n_action);
 						}
 					}
 				}
@@ -1918,7 +1931,7 @@ impl LemonMintBuilder
 		let mut n_fallbacks = 0;
 		if self.has_fallback
 		{	n_fallbacks = symbols.n_terminals - 1;
-			while n_fallbacks>0 && symbols.array[n_fallbacks].borrow().fallback.is_none()
+			while n_fallbacks>0 && symbols.array[n_fallbacks].fallback_index==std::usize::MAX
 			{	n_fallbacks -= 1;
 			}
 			n_fallbacks += 1;
@@ -1947,7 +1960,7 @@ impl LemonMintBuilder
 	}
 
 	/// Generate source code for the parser
-	fn get_lemon(mut self, symbols: Symbols, mut rules: Vec<Rule>, states: States, acttab: ActTab) -> ParserResult<LemonMint>
+	fn get_lemon(mut self, mut symbols: Symbols, mut rules: Vec<Rule>, states: States, acttab: ActTab) -> ParserResult<LemonMint>
 	{	// Generate types
 		let sz_code_type = Self::minimum_size_type(0, symbols.n_symbols as isize+1);
 		let sz_action_type =  Self::minimum_size_type(0, (states.array.len()+rules.len()+5) as isize);
@@ -1957,7 +1970,7 @@ impl LemonMintBuilder
 		// Generate token constants
 		let mut token = Vec::with_capacity(symbols.n_terminals);
 		for symbol in symbols.array[1 .. symbols.n_terminals].iter()
-		{	token.push(Rc::clone(&symbol.borrow().name));
+		{	token.push(Arc::clone(&symbol.name));
 		}
 
 		// Generate the table of rule information
@@ -2019,11 +2032,12 @@ impl LemonMintBuilder
 		if self.has_fallback
 		{	fallback.reserve(acttab.n_fallbacks);
 			for symbol in symbols.array.iter().take(acttab.n_fallbacks)
-			{	if let Some(ref fb) = symbol.borrow().fallback
-				{	fallback.push((fb.borrow().index, Rc::clone(&symbol.borrow().name), Rc::clone(&fb.borrow().name)));
+			{	if symbol.fallback_index != std::usize::MAX
+				{	let fb = &symbols.array[symbol.fallback_index];
+					fallback.push((fb.index, Arc::clone(&symbol.name), Arc::clone(&fb.name)));
 				}
 				else
-				{	fallback.push((0, Rc::clone(&symbol.borrow().name), Rc::new(String::new())));
+				{	fallback.push((0, Arc::clone(&symbol.name), Arc::new(String::new())));
 				}
 			}
 		}
@@ -2034,23 +2048,23 @@ impl LemonMintBuilder
 		if self.with_trace && symbols.n_symbols!=0
 		{	token_names.reserve(symbols.n_symbols);
 			for symbol in symbols.array.iter().take(symbols.n_symbols)
-			{	token_names.push(Rc::clone(&symbol.borrow().name));
+			{	token_names.push(Arc::clone(&symbol.name));
 			}
 		}
 
 		// Generate code which execution during each REDUCE action
 		for sym in symbols.array.iter()
-		{	for n_rule in sym.borrow().sym_rules_arr.iter()
+		{	for n_rule in sym.sym_rules_arr.iter()
 			{	self.translate_code(&mut rules[*n_rule])?;
 			}
 		}
 
-		let start_type = symbols.get_start_symbol().borrow().data_type.clone();
-		let minor_type = self.get_minor_type(&symbols);
+		let start_type = symbols.get_start_symbol().data_type.clone();
+		let minor_type = self.get_minor_type(&mut symbols);
 		let n_symbols = symbols.n_symbols;
 		let n_states = states.array.len();
 		let n_no_tail = states.n_no_tail;
-		let error_symbol = if let Some(symbol) = symbols.get_error_symbol() {symbol.borrow().index} else {0};
+		let error_symbol = if let Some(symbol) = symbols.get_error_symbol() {symbol.index} else {0};
 		let n_terminals = symbols.n_terminals;
 		let n_nonterminals = symbols.n_symbols - symbols.n_terminals;
 
@@ -2435,7 +2449,7 @@ impl LemonMintBuilder
 		if fallback_to_symbol_name.find(|c: char| !c.is_ascii_alphanumeric() && c!='_').is_some()
 		{	return Err(LemonMintError::new(filename, n_line, format!("Invalid token name: {}", fallback_to_symbol_name)));
 		}
-		let fallback_to_symbol_name = Rc::new(fallback_to_symbol_name);
+		let fallback_to_symbol_name = Arc::new(fallback_to_symbol_name);
 		for symbol_name in symbol_names.trim().split(|c: char| c.is_ascii_whitespace())
 		{	if !symbol_name.is_empty()
 			{	if symbol_name.find(|c: char| !c.is_ascii_alphanumeric() && c!='_').is_some()
@@ -2444,16 +2458,18 @@ impl LemonMintBuilder
 				if !is_terminal_name(symbol_name)
 				{	return Err(LemonMintError::new(filename, n_line, format!("Can only set fallback to terminal symbols, not \"{}\"", symbol_name)));
 				}
-				let symbol_name = Rc::new(symbol_name.to_string());
-				let sp = self.symbols_builder.add(Rc::clone(&symbol_name));
-				if sp.borrow().fallback.is_some()
+				let symbol_name = Arc::new(symbol_name.to_string());
+				self.symbols_builder.add(&symbol_name);
+				self.symbols_builder.add(&fallback_to_symbol_name);
+				let sp = self.symbols_builder.get(&symbol_name);
+				if sp.fallback_index != std::usize::MAX
 				{	return Err(LemonMintError::new(filename, n_line, format!("More than one fallback assigned to token \"{}\"", symbol_name)));
 				}
-				let fsp = self.symbols_builder.add(Rc::clone(&fallback_to_symbol_name));
-				if *fsp.borrow() == *sp.borrow()
-				{	return Err(LemonMintError::new(filename, n_line, format!("Symbol \"{}\" is asked fallback to self // {}, {}", symbol_name, fsp.borrow().name, sp.borrow().name)));
+				let fsp = self.symbols_builder.get(&fallback_to_symbol_name);
+				if *fsp == *sp
+				{	return Err(LemonMintError::new(filename, n_line, format!("Symbol \"{}\" is asked fallback to self // {}, {}", symbol_name, fallback_to_symbol_name, symbol_name)));
 				}
-				sp.borrow_mut().fallback = Some(fsp);
+				self.symbols_builder.get_mut(&symbol_name).fallback_index = fsp.index;
 			}
 		}
 		Ok(self)
@@ -2475,8 +2491,9 @@ impl LemonMintBuilder
 		if self.start_name.is_empty()
 		{	self.start_name = lhs_name.clone();
 		}
-		let lhs_name = Rc::new(lhs_name);
-		let mut rule = Rule::new(filename, n_line, &self.symbols_builder.add(lhs_name), self.rules.len(), code);
+		let lhs_name = Arc::new(lhs_name);
+		let lhs_index = self.symbols_builder.add(&lhs_name);
+		let mut rule = Rule::new(filename, n_line, &lhs_name, lhs_index, self.rules.len(), code);
 		// parse rhs_names_aliases
 		let mut s = rhs_names_aliases.trim_start();
 		while s.len() != 0
@@ -2484,7 +2501,8 @@ impl LemonMintBuilder
 			if name_len == 0
 			{	return Err(LemonMintError::new(filename, n_line, format!("Invalid RHS expression: \"{}\"", rhs_names_aliases)));
 			}
-			rule.rhs.push(self.symbols_builder.add(Rc::new(s[.. name_len].to_string())));
+			let rhs_name = Arc::new(s[.. name_len].to_string());
+			let rhs_index = self.symbols_builder.add(&rhs_name);
 			s = s[name_len ..].trim_start();
 			let mut alias = String::new();
 			if s.bytes().next() == Some(b'(')
@@ -2497,9 +2515,9 @@ impl LemonMintBuilder
 				}
 				s = s[1 ..].trim_start();
 			}
-			rule.rhs_aliases.push(alias);
+			rule.rhs.push(Rhs{name: rhs_name, index: rhs_index, alias});
 		}
-		rule.lhs.borrow_mut().sym_rules_arr.insert(0, self.rules.len()); // TODO: maybe push(), not insert()
+		self.symbols_builder.get_mut(&lhs_name).sym_rules_arr.insert(0, self.rules.len()); // TODO: maybe push(), not insert()
 		self.rules.push(rule);
 		Ok(self)
 	}
@@ -2537,6 +2555,16 @@ impl LemonMintBuilder
 		if rules.len() == 0
 		{	return Err(LemonMintError::new(&Arc::new(String::new()), 1, "Empty grammar".to_string()));
 		}
+
+		// Count and index the symbols of the grammar
+		let mut symbols =
+		{	let symbols_builder = mem::replace(&mut self.symbols_builder, SymbolsBuilder::new(true));
+			let nonterminal_types = mem::replace(&mut self.nonterminal_types, HashMap::new());
+			let precedence = mem::replace(&mut self.precedence, HashMap::new());
+
+			symbols_builder.into_symbols(&self.start_name, nonterminal_types, precedence, &mut rules)? // symbols - Sorted array of all symbols
+		};
+
 		// Put rules that have no reduce action C-code associated with them last, so that the switch() statement that selects reduction actions will have a smaller jump table.
 		rules.sort_by
 		(	|a, b|
@@ -2555,20 +2583,11 @@ impl LemonMintBuilder
 		{	rule.index = i;
 		}
 
-		// Count and index the symbols of the grammar
-		let symbols =
-		{	let symbols_builder = mem::replace(&mut self.symbols_builder, SymbolsBuilder::new(true));
-			let nonterminal_types = mem::replace(&mut self.nonterminal_types, HashMap::new());
-			let precedence = mem::replace(&mut self.precedence, HashMap::new());
-
-			symbols_builder.into_symbols(&self.start_name, nonterminal_types, precedence) // symbols - Sorted array of all symbols
-		}?;
-
 		// Find the precedence for every production rule (that has one)
-		Self::find_rule_precedences(&mut rules);
+		Self::find_rule_precedences(&mut symbols, &mut rules);
 
 		// Compute the lambda-nonterminals and the first-sets for every nonterminal
-		self.find_first_sets(&symbols, &rules);
+		self.find_first_sets(&mut symbols, &mut rules);
 
 		// Find the start symbol
 		if !self.start_name.is_empty()
@@ -2583,9 +2602,9 @@ impl LemonMintBuilder
 		// Make sure the start symbol doesn't occur on the right-hand side of any rule.  Report an error if it does.
 		// (YACC would generate a new start symbol in this case.)
 		for rule in rules.iter()
-		{	for sp in rule.rhs.iter()
-			{	if *sp.borrow() == *symbols.get_start_symbol().borrow()
-				{	return Err(LemonMintError::new(&Self::get_filename_of_first_rule(&rules), 1, format!("The start symbol \"{}\" occurs on the right-hand side of a rule", sp.borrow().name)));
+		{	for rhs in &rule.rhs
+			{	if rhs.index == symbols.start_symbol_index
+				{	return Err(LemonMintError::new(&Self::get_filename_of_first_rule(&rules), 1, format!("The start symbol \"{}\" occurs on the right-hand side of a rule", rhs.name)));
 				}
 			}
 		}
@@ -2593,7 +2612,7 @@ impl LemonMintBuilder
 		dump_symbols(&symbols, &rules);
 
 		// Compute all LR(0) states.  Also record follow-set propagation links so that the follow-set can be computed later
-		let mut states = StatesBuilder::build(&mut rules, symbols.get_start_symbol(), symbols.n_terminals, &mut self.actions_enum)?;
+		let mut states = StatesBuilder::build(&symbols, &mut rules, symbols.get_start_symbol(), symbols.n_terminals, &mut self.actions_enum)?;
 
 		dump_states(&states, &rules, &symbols, 1);
 
@@ -2614,7 +2633,7 @@ impl LemonMintBuilder
 
 		// Compress the action tables
 		if !self.no_compress
-		{	self.compress_tables(&symbols, &rules, &mut states, symbols.get_default_symbol());
+		{	self.compress_tables(&symbols, &rules, &mut states, symbols.default_symbol_index);
 		}
 
 		dump_states(&states, &rules, &symbols, 5);
@@ -2678,7 +2697,7 @@ pub struct LemonMint
 	extra_argument_type: String,
 	extracode: String,
 	minor_type: Vec<(String, String)>,
-	token: Vec<Rc<String>>,
+	token: Vec<Arc<String>>,
 
 	sz_code_type: isize,
 	sz_action_type: isize,
@@ -2709,8 +2728,8 @@ pub struct LemonMint
 	shift_offset: Vec<isize>,
 	reduce_offset: Vec<isize>,
 	default: Vec<usize>,
-	fallback: Vec<(usize, Rc<String>, Rc<String>)>,
-	token_names: Vec<Rc<String>>,
+	fallback: Vec<(usize, Arc<String>, Arc<String>)>,
+	token_names: Vec<Arc<String>>,
 }
 impl LemonMint
 {	/// Generate Rust source code for the parser
@@ -2883,9 +2902,9 @@ impl LemonMint
 		// Note: This code depends on the fact that rules are number sequentually beginning with 0.
 		write!(out, "const RULES_INFO: [CodeType; {}] =", self.rules.len())?;
 		let mut formatter = ArrayFormatter::new(16);
-		for rule in self.rules.iter()
+		for rule in &self.rules
 		{	formatter.separ(out)?;
-			write!(out, "{:4}", rule.lhs.borrow().index)?;
+			write!(out, "{:4}", rule.lhs_index)?;
 		}
 		formatter.end(out)?;
 
@@ -2896,10 +2915,10 @@ impl LemonMint
 		for rule in self.rules.iter()
 		{	if !rule.code.is_empty() // Will be default:
 			{	write!(out, "\t\t\t{} =>", rule.index)?;
-				let has_data_type = !rule.lhs.borrow().data_type.is_empty();
+				let has_data_type = !self.symbols.array[rule.lhs_index].data_type.is_empty();
 				let mut next_indent = "\t\t\t\t";
 				if has_data_type && !rule.lhs_start
-				{	write!(out, " MinorType::Symbol{}\n\t\t\t(\t{{", rule.lhs.borrow().dtnum)?;
+				{	write!(out, " MinorType::Symbol{}\n\t\t\t(\t{{", self.symbols.array[rule.lhs_index].dtnum)?;
 					next_indent = "\t\t\t\t\t";
 				}
 				else
@@ -2909,7 +2928,7 @@ impl LemonMint
 				let mut n_aliases = 0;
 				let n_args = rule.rhs.len();
 				for i in (0 .. n_args).rev()
-				{	let has_alias = !rule.rhs_aliases[i].is_empty();
+				{	let has_alias = !rule.rhs[i].alias.is_empty();
 					if has_alias
 					{	n_aliases += 1;
 						writeln!(out, "{}let arg{} = self.stack.pop().unwrap();", indent, i+1)?;
@@ -2923,7 +2942,7 @@ impl LemonMint
 				{	write!(out, "{}{}match {}", indent, if rule.lhs_start {"let result = "} else {""}, if n_aliases>1 {"("} else {""})?;
 					let mut comma = "";
 					for i in 0 .. n_args
-					{	if !rule.rhs_aliases[i].is_empty()
+					{	if !rule.rhs[i].alias.is_empty()
 						{	write!(out, "{}arg{}.minor", comma, i+1)?;
 							comma = ", ";
 						}
@@ -2931,14 +2950,14 @@ impl LemonMint
 					write!(out, "{}\n{}{{\t{}", if n_aliases>1 {")"} else {""}, indent, if n_aliases>1 {"("} else {""})?;
 					comma = "";
 					for (i, rhs) in rule.rhs.iter().enumerate()
-					{	if !rule.rhs_aliases[i].is_empty()
-						{	write!(out, "{}MinorType::Symbol{}(arg{})", comma, rhs.borrow().dtnum, i+1)?;
+					{	if !rhs.alias.is_empty()
+						{	write!(out, "{}MinorType::Symbol{}(arg{})", comma, self.symbols.array[rhs.index].dtnum, i+1)?;
 							comma = ", ";
 						}
 					}
 					write!(out, "{} => super::rules::do_rule_{}(&mut self.extra", if n_aliases>1 {")"} else {""}, rule.index)?;
 					for i in 0 .. n_args
-					{	if !rule.rhs_aliases[i].is_empty()
+					{	if !rule.rhs[i].alias.is_empty()
 						{	write!(out, ", arg{}", i+1)?;
 						}
 					}
@@ -2978,20 +2997,19 @@ impl LemonMint
 			{	write!(out, "\n\t/// {}\n", rule)?;
 				write!(out, "\t#[inline]\n\t#[allow(non_snake_case, unused_variables)]\n")?;
 				write!(out, "\tpub fn do_rule_{}(extra: &mut ExtraArgumentType", rule.index)?;
-				for (i, rhs_rule) in rule.rhs.iter().enumerate()
-				{	if !rule.rhs_aliases[i].is_empty()
-					{	let rhs_rule = rhs_rule.borrow();
-						let data_type = if rhs_rule.index < self.n_terminals
+				for rhs in &rule.rhs
+				{	if !rhs.alias.is_empty()
+					{	let data_type = if rhs.index < self.n_terminals
 						{	"TokenValue"
 						}
 						else
-						{	&rhs_rule.data_type
+						{	&self.symbols.array[rhs.index].data_type
 						};
-						write!(out, ", {}: {}", rule.rhs_aliases[i], if data_type.is_empty() {"()"} else {data_type})?;
+						write!(out, ", {}: {}", rhs.alias, if data_type.is_empty() {"()"} else {data_type})?;
 					}
 				}
 				write!(out, ")")?;
-				let lhs = rule.lhs.borrow();
+				let lhs = &self.symbols.array[rule.lhs_index];
 				if !lhs.data_type.is_empty()
 				{	write!(out, " -> {}", lhs.data_type)?;
 				}
@@ -3058,7 +3076,7 @@ impl LemonMint
 
 			writeln!(out, "")?;
 			for action in stp.actions.iter()
-			{	if Self::print_action(&self.rules, action, out, 30, show_precedence_conflict)?
+			{	if self.print_action(action, out, 30, show_precedence_conflict)?
 				{	writeln!(out, "")?;
 				}
 			}
@@ -3068,15 +3086,15 @@ impl LemonMint
 		writeln!(out, "Symbols:")?;
 		for i in 0 .. self.symbols.n_symbols
 		{	let sp = &self.symbols.array[i];
-			write!(out, " {:>3}: {}", i, sp.borrow().name)?;
-			if sp.borrow().typ == SymbolType::NONTERMINAL
+			write!(out, " {:>3}: {}", i, sp.name)?;
+			if sp.typ == SymbolType::NONTERMINAL
 			{	write!(out, ":")?;
-				if sp.borrow().lambda
+				if sp.lambda
 				{	write!(out, " <lambda>")?;
 				}
 				for j in 0 .. self.symbols.n_terminals
-				{	if sp.borrow().firstset.len()>0 && sp.borrow().firstset.contains(j)
-					{	write!(out, " {}", self.symbols.array[j].borrow().name)?;
+				{	if sp.firstset.len()>0 && sp.firstset.contains(j)
+					{	write!(out, " {}", self.symbols.array[j].name)?;
 					}
 				}
 			}
@@ -3086,7 +3104,7 @@ impl LemonMint
 	}
 
 	fn config_print<W>(rules: &Vec<Rule>, out: &mut W, cfp: &Rc<RefCell<Config>>) -> io::Result<()> where W: io::Write
-	{	write!(out, "{} ::=", rules[cfp.borrow().n_rule].lhs.borrow().name)?;
+	{	write!(out, "{} ::=", rules[cfp.borrow().n_rule].lhs)?;
 		for i in 0 ..= rules[cfp.borrow().n_rule].rhs.len()
 		{	if i == cfp.borrow().dot
 			{	write!(out, " *")?;
@@ -3094,59 +3112,59 @@ impl LemonMint
 			if i == rules[cfp.borrow().n_rule].rhs.len()
 			{	break;
 			}
-			write!(out, " {}", rules[cfp.borrow().n_rule].rhs[i].borrow().name)?;
+			write!(out, " {}", rules[cfp.borrow().n_rule].rhs[i].name)?;
 		}
 		Ok(())
 	}
 
 	/// Print an action to the given file descriptor.  Return FALSE if nothing was actually printed.
-	fn print_action<W>(rules: &Vec<Rule>, action: &Rc<RefCell<Action>>, out: &mut W, indent: usize, show_precedence_conflict: bool) -> io::Result<bool> where W: io::Write
+	fn print_action<W>(&self, action: &Rc<RefCell<Action>>, out: &mut W, indent: usize, show_precedence_conflict: bool) -> io::Result<bool> where W: io::Write
 	{	let mut result = false;
 		match action.borrow().typ
 		{	ActionType::Shift =>
 			{	if let StateOrRule::State(n_state) = action.borrow().x
-				{	write!(out, "{:>w$} shift        {:<7}", action.borrow().sp.borrow().name, n_state, w=indent)?;
+				{	write!(out, "{:>w$} shift        {:<7}", self.symbols.array[action.borrow().symbol_index].name, n_state, w=indent)?;
 					result = true;
 				}
 			}
 			ActionType::Reduce =>
 			{	if let StateOrRule::Rule(n_rule) = action.borrow().x
-				{	write!(out, "{:>w$} reduce       {:<7}", action.borrow().sp.borrow().name, rules[n_rule].index, w=indent)?;
-					Self::rule_print(out, &rules[n_rule], std::usize::MAX)?;
+				{	write!(out, "{:>w$} reduce       {:<7}", self.symbols.array[action.borrow().symbol_index].name, self.rules[n_rule].index, w=indent)?;
+					Self::rule_print(out, &self.rules[n_rule], std::usize::MAX)?;
 					result = true;
 				}
 			}
 			ActionType::ShiftReduce =>
 			{	if let StateOrRule::Rule(n_rule) = action.borrow().x
-				{	write!(out, "{:>w$} shift-reduce {:<7}", action.borrow().sp.borrow().name, rules[n_rule].index, w=indent)?;
-					Self::rule_print(out, &rules[n_rule], std::usize::MAX)?;
+				{	write!(out, "{:>w$} shift-reduce {:<7}", self.symbols.array[action.borrow().symbol_index].name, self.rules[n_rule].index, w=indent)?;
+					Self::rule_print(out, &self.rules[n_rule], std::usize::MAX)?;
 					result = true;
 				}
 			}
 			ActionType::Accept =>
-			{	write!(out, "{:>w$} accept", action.borrow().sp.borrow().name, w=indent)?;
+			{	write!(out, "{:>w$} accept", self.symbols.array[action.borrow().symbol_index].name, w=indent)?;
 				result = true;
 			}
 			ActionType::Error =>
-			{	write!(out, "{:>w$} error", action.borrow().sp.borrow().name, w=indent)?;
+			{	write!(out, "{:>w$} error", self.symbols.array[action.borrow().symbol_index].name, w=indent)?;
 				result = true;
 			}
 			ActionType::SrConflict | ActionType::RrConflict =>
 			{	if let StateOrRule::Rule(n_rule) = action.borrow().x
-				{	write!(out, "{:>w$} reduce       {:<7} ** Parsing conflict **", action.borrow().sp.borrow().name, rules[n_rule].index, w=indent)?;
+				{	write!(out, "{:>w$} reduce       {:<7} ** Parsing conflict **", self.symbols.array[action.borrow().symbol_index].name, self.rules[n_rule].index, w=indent)?;
 					result = true;
 				}
 			}
 			ActionType::SsConflict =>
 			{	if let StateOrRule::State(n_state) = action.borrow().x
-				{	write!(out, "{:>w$} shift        {:<7} ** Parsing conflict **", action.borrow().sp.borrow().name, n_state, w=indent)?;
+				{	write!(out, "{:>w$} shift        {:<7} ** Parsing conflict **", self.symbols.array[action.borrow().symbol_index].name, n_state, w=indent)?;
 					result = true;
 				}
 			}
 			ActionType::ShResolved =>
 			{	if show_precedence_conflict
 				{	if let StateOrRule::State(n_state) = action.borrow().x
-					{	write!(out, "{:>w$} shift        {:<7} -- dropped by precedence", action.borrow().sp.borrow().name, n_state, w=indent)?;
+					{	write!(out, "{:>w$} shift        {:<7} -- dropped by precedence", self.symbols.array[action.borrow().symbol_index].name, n_state, w=indent)?;
 						result = true;
 					}
 				}
@@ -3154,7 +3172,7 @@ impl LemonMint
 			ActionType::RdResolved =>
 			{	if show_precedence_conflict
 				{	if let StateOrRule::Rule(n_rule) = action.borrow().x
-					{	write!(out, "{:>w$} reduce {:<7} -- dropped by precedence", action.borrow().sp.borrow().name, rules[n_rule].index, w=indent)?;
+					{	write!(out, "{:>w$} reduce {:<7} -- dropped by precedence", self.symbols.array[action.borrow().symbol_index].name, self.rules[n_rule].index, w=indent)?;
 						result = true;
 					}
 				}
@@ -3166,12 +3184,12 @@ impl LemonMint
 
 	/// Print a single rule.
 	fn rule_print<W>(out: &mut W, rule: &Rule, cursor: usize) -> io::Result<()> where W: io::Write
-	{	write!(out, "{} ::=", rule.lhs.borrow().name)?;
+	{	write!(out, "{} ::=", rule.lhs)?;
 		for (i, symbol) in rule.rhs.iter().enumerate()
 		{	if i == cursor
 			{	write!(out, " *")?;
 			}
-			write!(out, " {}", symbol.borrow().name)?;
+			write!(out, " {}", symbol.name)?;
 		}
 		if cursor == rule.rhs.len()
 		{	write!(out, " *")?;
@@ -3184,8 +3202,8 @@ impl LemonMint
 	{	writeln!(out, "// Symbols:")?;
 		let mut maxlen = 10;
 		for sp in self.symbols.array[0 .. self.symbols.n_symbols].iter()
-		{	if sp.borrow().name.len() > maxlen
-			{	maxlen = sp.borrow().name.len();
+		{	if sp.name.len() > maxlen
+			{	maxlen = sp.name.len();
 			}
 		}
 		let mut ncolumns = 76 / (maxlen+5);
@@ -3197,8 +3215,8 @@ impl LemonMint
 		{	write!(out, "//")?;
 			for j in (i .. self.symbols.n_symbols).step_by(skip)
 			{	let sp = &self.symbols.array[j];
-				assert_eq!(sp.borrow().index, j);
-				write!(out, " {:3} {:<w$}", maxlen, sp.borrow().name, w=maxlen)?;
+				assert_eq!(sp.index, j);
+				write!(out, " {:3} {:<w$}", maxlen, sp.name, w=maxlen)?;
 			}
 			writeln!(out, "")?;
 		}
@@ -3225,16 +3243,16 @@ impl LemonMint
 		{	let mut has_greater_prec = false;
 			let mut started = false;
 			for symbol in self.symbols.array[1 .. self.symbols.n_terminals].iter()
-			{	if symbol.borrow().prec >= prec
-				{	if symbol.borrow().prec > prec
+			{	if symbol.prec >= prec
+				{	if symbol.prec > prec
 					{	has_greater_prec = true;
 					}
 					else
 					{	if !started
-						{	write!(out, "{}", if symbol.borrow().assoc== Associativity::LEFT {"%left"} else if symbol.borrow().assoc== Associativity::RIGHT {"%right"} else {"%nonassoc"})?;
+						{	write!(out, "{}", if symbol.assoc== Associativity::LEFT {"%left"} else if symbol.assoc== Associativity::RIGHT {"%right"} else {"%nonassoc"})?;
 							started = true;
 						}
-						write!(out, " {}", symbol.borrow().name)?;
+						write!(out, " {}", symbol.name)?;
 					}
 				}
 			}
@@ -3248,26 +3266,25 @@ impl LemonMint
 		}
 		// %type
 		for symbol in self.symbols.array[self.symbols.n_terminals+1 .. self.symbols.n_symbols].iter()
-		{	let symbol = symbol.borrow();
+		{	let symbol = symbol;
 			writeln!(out, "%type {} {{{}}}", symbol.name, symbol.data_type)?;
 		}
 		// rules
 		for rule in self.rules.iter()
-		{	write!(out, "{}", rule.lhs.borrow().name)?;
-			if rule.lhs.borrow().dtnum != 0
+		{	write!(out, "{}", rule.lhs)?;
+			if self.symbols.array[rule.lhs_index].dtnum != 0
 			{	write!(out, "(RESULT)")?;
 			}
 			write!(out, " ::=")?;
-			for i in 0 .. rule.rhs.len()
-			{	let sp = &rule.rhs[i];
-				write!(out, " {}", sp.borrow().name)?;
-				if rule.rhs_aliases.len()>i && !rule.rhs_aliases[i].is_empty()
-				{	write!(out, "({})", rule.rhs_aliases[i])?;
+			for sp in &rule.rhs
+			{	write!(out, " {}", sp.name)?;
+				if !sp.alias.is_empty()
+				{	write!(out, "({})", sp.alias)?;
 				}
 			}
 			write!(out, ".")?;
-			if let Some(ref precsym) = rule.precsym
-			{	write!(out, " [{}]", precsym.borrow().name)?;
+			if rule.precsym_index != std::usize::MAX
+			{	write!(out, " [{}]", self.symbols.array[rule.precsym_index].name)?;
 			}
 			if !rule.code.is_empty()
 			{	writeln!(out, " {{\n{}\n}}", rule.code)?;
@@ -3300,8 +3317,7 @@ fn dump_symbols(symbols: &Symbols, rules: &Vec<Rule>)
 {	use std::io::prelude::*;
 	let mut out = File::create("/tmp/symbols-rust.js").unwrap();
 	for s in symbols.array.iter()
-	{	let s = s.borrow();
-		writeln!(out, "{} ({}) {:?} #{} {:?} {} {}LAM:", s.name, s.index, s.typ, s.dtnum, s.assoc, s.prec, if s.lambda {""} else {"!"}).unwrap();
+	{	writeln!(out, "{} ({}) {:?} #{} {:?} {} {}LAM:", s.name, s.index, s.typ, s.dtnum, s.assoc, s.prec, if s.lambda {""} else {"!"}).unwrap();
 		if s.firstset.len() > 0
 		{	write!(out, "  ").unwrap();
 			for (j, v) in s.firstset.data.iter().enumerate()
@@ -3358,22 +3374,22 @@ fn dump_states(states: &States, rules: &Vec<Rule>, symbols: &Symbols, n: i32)
 			if s.default_reduce_action==std::usize::MAX {-1} else {s.default_reduce_action as isize},
 			if s.auto_reduce {"A"} else {"!A"},
 			if s.default_reduce_rule==std::usize::MAX {-1} else {s.default_reduce_rule as isize},
-			if s.default_reduce_rule==std::usize::MAX {"".to_string()} else {rules[s.default_reduce_rule].lhs.borrow().name.to_string()}
+			if s.default_reduce_rule==std::usize::MAX {"".to_string()} else {rules[s.default_reduce_rule].lhs.to_string()}
 		).unwrap();
 		for cfp in s.basis.iter()
 		{	let cfp = cfp.borrow();
-			writeln!(out, "  bs{} R{}[{}] .{}", cfp.n_state as isize, cfp.n_rule, rules[cfp.n_rule].lhs.borrow().name, cfp.dot).unwrap();
+			writeln!(out, "  bs{} R{}[{}] .{}", cfp.n_state as isize, cfp.n_rule, rules[cfp.n_rule].lhs, cfp.dot).unwrap();
 		}
 		for cfp in s.configurations.iter()
 		{	let cfp = cfp.borrow();
 			// rule
-			writeln!(out, "  cf{} R{}[{}] .{}", cfp.n_state as isize, cfp.n_rule, rules[cfp.n_rule].lhs.borrow().name, cfp.dot).unwrap();
+			writeln!(out, "  cf{} R{}[{}] .{}", cfp.n_state as isize, cfp.n_rule, rules[cfp.n_rule].lhs, cfp.dot).unwrap();
 			// fws
 			let mut delim = "";
 			write!(out, "{:<12}[", "").unwrap();
 			for (j, v) in cfp.fws.data.iter().enumerate()
 			{	if *v
-				{	write!(out, "{}{}", delim, symbols.array[j].borrow().name).unwrap();
+				{	write!(out, "{}{}", delim, symbols.array[j].name).unwrap();
 					delim = " ";
 				}
 			}
