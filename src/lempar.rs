@@ -357,10 +357,14 @@ impl Parser
 	/// token - The major token number.
 	/// minor - The minor token number.
 	pub fn add_token(&mut self, token: Token, minor: TokenValue) -> Result<(), ()>
-	{	self.do_add_token(token as u32 as CodeType, MinorType::Symbol0(minor))
+	{	self.do_add_token(token as u32 as CodeType, MinorType::Symbol0(minor), false).map(|_| ())
 	}
 
-	fn do_add_token(&mut self, major: CodeType, minor: MinorType) -> Result<(), ()>
+	pub fn try_add_token(&mut self, token: Token, minor: TokenValue) -> Result<bool, ()>
+	{	self.do_add_token(token as u32 as CodeType, MinorType::Symbol0(minor), true)
+	}
+
+	fn do_add_token(&mut self, major: CodeType, minor: MinorType, mut is_try: bool) -> Result<bool, ()>
 	{	debug_assert!(self.stack.len() != 0);
 		let mut error_hit = false;   // True if major has invoked an error
 		let is_end_of_input = major == 0; // True if we are at the end of input
@@ -386,6 +390,7 @@ impl Parser
 			}
 			else if action >= MIN_REDUCE
 			{	action = self.reduce(action - MIN_REDUCE);
+				is_try = false;
 			}
 			else if action == ACCEPT_ACTION
 			{	self.stack.pop();
@@ -396,6 +401,9 @@ impl Parser
 			}
 			else
 			{	debug_assert!(action == ERROR_ACTION);
+				if is_try
+				{	return Ok(false);
+				}
 				if TRACE
 				{	eprintln!("{}Syntax Error!", TRACE_PROMPT);
 				}
@@ -456,11 +464,11 @@ impl Parser
 				eprintln!("]");
 			}
 		}
-		Ok(())
+		Ok(true)
 	}
 
 	pub fn end(&mut self) -> Result<StartType, ()>
-	{	self.do_add_token(0, MinorType::None)?;
+	{	self.do_add_token(0, MinorType::None, false)?;
 		self.stack.truncate(1);
 		Ok(self.result.take().unwrap())
 	}

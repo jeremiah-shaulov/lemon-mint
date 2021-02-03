@@ -1,6 +1,6 @@
 [package]
 name = "lemon-mint"
-version = "0.1.3"
+version = "0.1.4"
 authors = ["Jeremiah Shaulov <jeremiah.shaulov@gmail.com>"]
 edition = "2018"
 keywords = ["lemon", "lalr1", "parser", "generator"]

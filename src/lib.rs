@@ -2879,7 +2879,7 @@ impl LemonMint
 		writeln!(out, "}}")?;
 
 		// Generate token constants
-		writeln!(out, "#[repr(u32)]\n#[allow(non_camel_case_types)]")?;
+		writeln!(out, "#[repr(u32)]\n#[derive(Copy, Clone, PartialEq)]\n#[allow(non_camel_case_types)]")?;
 		write!(out, "pub enum Token\n{{")?;
 		for (i, name) in self.token.iter().enumerate()
 		{	if self.token_type.is_empty()
