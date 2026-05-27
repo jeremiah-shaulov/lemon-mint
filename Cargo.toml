@@ -1,8 +1,9 @@
 [package]
 name = "lemon-mint"
-version = "0.1.4"
+version = "0.2.0"
 authors = ["Jeremiah Shaulov <jeremiah.shaulov@gmail.com>"]
-edition = "2018"
+edition = "2024"
+rust-version = "1.85"
 keywords = ["lemon", "lalr1", "parser", "generator"]
 categories = ["parsing"]
 description = "Famous Lemon Parser Generator implemented in rust as library with API."

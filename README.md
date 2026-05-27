@@ -4,8 +4,6 @@ Famous Lemon Parser Generator implemented in rust as library with API.
 ## Example
 
 ```rust
-extern crate lemon_mint;
-
 use std::fs::File;
 use std::sync::Arc;
 use lemon_mint::LemonMintBuilder;

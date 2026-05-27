@@ -4,8 +4,6 @@
 //! ## Example
 //!
 //! ```
-//! extern crate lemon_mint;
-//!
 //! use std::fs::File;
 //! use std::sync::Arc;
 //! use lemon_mint::LemonMintBuilder;
@@ -680,7 +678,7 @@ impl ActTab
 		n_action
 	}
 
-	fn iter(&self) -> Take<Iter<LookaheadAction>>
+	fn iter(&self) -> Take<Iter<'_, LookaheadAction>>
 	{	self.a_action.iter().take(self.n_action)
 	}
 
@@ -1356,7 +1354,7 @@ impl LemonMintBuilder
 						if symbols.array[rule.lhs_index].firstset.intersect(&set)
 						{	progress = true;
 						}
-						mem::replace(&mut symbols.array[rhs.index].firstset, set);
+						symbols.array[rhs.index].firstset = set;
 						if !symbols.array[rhs.index].lambda
 						{	break;
 						}
@@ -2828,7 +2826,7 @@ pub struct LemonMint
 	n_no_tail: usize,
 	n_fallbacks: usize,
 	error_symbol: usize,
-	with_fallback: bool,
+	#[allow(dead_code)] with_fallback: bool,
 	shift_count: usize,
 	reduce_count: usize,
 	with_trace: bool,
@@ -2839,8 +2837,8 @@ pub struct LemonMint
 	reduce_max: isize,
 
 	n_terminals: usize,
-	n_nonterminals: usize,
-	tables_size: usize,                // Total table size of all tables in bytes
+	#[allow(dead_code)] n_nonterminals: usize,
+	#[allow(dead_code)] tables_size: usize,                // Total table size of all tables in bytes
 	n_action_table_entries: usize,     // Number of entries in the yy_action[] table
 
 	lookahead_and_action: Vec<(usize, usize)>,
@@ -3195,7 +3193,7 @@ impl LemonMint
 
 			writeln!(out, "")?;
 			for action in stp.actions.iter()
-			{	if self.print_action(action, out, 30, show_precedence_conflict)?
+			{	if Self::print_action(&self.symbols, &self.rules, action, out, 30, show_precedence_conflict)?
 				{	writeln!(out, "")?;
 				}
 			}
@@ -3237,53 +3235,53 @@ impl LemonMint
 	}
 
 	/// Print an action to the given file descriptor.  Return FALSE if nothing was actually printed.
-	fn print_action<W>(&self, action: &Rc<RefCell<Action>>, out: &mut W, indent: usize, show_precedence_conflict: bool) -> io::Result<bool> where W: io::Write
+	fn print_action<W>(symbols: &Symbols, rules: &[Rule], action: &Rc<RefCell<Action>>, out: &mut W, indent: usize, show_precedence_conflict: bool) -> io::Result<bool> where W: io::Write
 	{	let mut result = false;
 		match action.borrow().typ
 		{	ActionType::Shift =>
 			{	if let StateOrRule::State(n_state) = action.borrow().x
-				{	write!(out, "{:>w$} shift        {:<7}", self.symbols.array[action.borrow().symbol_index].name, n_state, w=indent)?;
+				{	write!(out, "{:>w$} shift        {:<7}", symbols.array[action.borrow().symbol_index].name, n_state, w=indent)?;
 					result = true;
 				}
 			}
 			ActionType::Reduce =>
 			{	if let StateOrRule::Rule(n_rule) = action.borrow().x
-				{	write!(out, "{:>w$} reduce       {:<7}", self.symbols.array[action.borrow().symbol_index].name, self.rules[n_rule].index, w=indent)?;
-					Self::rule_print(out, &self.rules[n_rule], std::usize::MAX)?;
+				{	write!(out, "{:>w$} reduce       {:<7}", symbols.array[action.borrow().symbol_index].name, rules[n_rule].index, w=indent)?;
+					Self::rule_print(out, &rules[n_rule], std::usize::MAX)?;
 					result = true;
 				}
 			}
 			ActionType::ShiftReduce =>
 			{	if let StateOrRule::Rule(n_rule) = action.borrow().x
-				{	write!(out, "{:>w$} shift-reduce {:<7}", self.symbols.array[action.borrow().symbol_index].name, self.rules[n_rule].index, w=indent)?;
-					Self::rule_print(out, &self.rules[n_rule], std::usize::MAX)?;
+				{	write!(out, "{:>w$} shift-reduce {:<7}", symbols.array[action.borrow().symbol_index].name, rules[n_rule].index, w=indent)?;
+					Self::rule_print(out, &rules[n_rule], std::usize::MAX)?;
 					result = true;
 				}
 			}
 			ActionType::Accept =>
-			{	write!(out, "{:>w$} accept", self.symbols.array[action.borrow().symbol_index].name, w=indent)?;
+			{	write!(out, "{:>w$} accept", symbols.array[action.borrow().symbol_index].name, w=indent)?;
 				result = true;
 			}
 			ActionType::Error =>
-			{	write!(out, "{:>w$} error", self.symbols.array[action.borrow().symbol_index].name, w=indent)?;
+			{	write!(out, "{:>w$} error", symbols.array[action.borrow().symbol_index].name, w=indent)?;
 				result = true;
 			}
 			ActionType::SrConflict | ActionType::RrConflict =>
 			{	if let StateOrRule::Rule(n_rule) = action.borrow().x
-				{	write!(out, "{:>w$} reduce       {:<7} ** Parsing conflict **", self.symbols.array[action.borrow().symbol_index].name, self.rules[n_rule].index, w=indent)?;
+				{	write!(out, "{:>w$} reduce       {:<7} ** Parsing conflict **", symbols.array[action.borrow().symbol_index].name, rules[n_rule].index, w=indent)?;
 					result = true;
 				}
 			}
 			ActionType::SsConflict =>
 			{	if let StateOrRule::State(n_state) = action.borrow().x
-				{	write!(out, "{:>w$} shift        {:<7} ** Parsing conflict **", self.symbols.array[action.borrow().symbol_index].name, n_state, w=indent)?;
+				{	write!(out, "{:>w$} shift        {:<7} ** Parsing conflict **", symbols.array[action.borrow().symbol_index].name, n_state, w=indent)?;
 					result = true;
 				}
 			}
 			ActionType::ShResolved =>
 			{	if show_precedence_conflict
 				{	if let StateOrRule::State(n_state) = action.borrow().x
-					{	write!(out, "{:>w$} shift        {:<7} -- dropped by precedence", self.symbols.array[action.borrow().symbol_index].name, n_state, w=indent)?;
+					{	write!(out, "{:>w$} shift        {:<7} -- dropped by precedence", symbols.array[action.borrow().symbol_index].name, n_state, w=indent)?;
 						result = true;
 					}
 				}
@@ -3291,7 +3289,7 @@ impl LemonMint
 			ActionType::RdResolved =>
 			{	if show_precedence_conflict
 				{	if let StateOrRule::Rule(n_rule) = action.borrow().x
-					{	write!(out, "{:>w$} reduce {:<7} -- dropped by precedence", self.symbols.array[action.borrow().symbol_index].name, self.rules[n_rule].index, w=indent)?;
+					{	write!(out, "{:>w$} reduce {:<7} -- dropped by precedence", symbols.array[action.borrow().symbol_index].name, rules[n_rule].index, w=indent)?;
 						result = true;
 					}
 				}
@@ -3527,7 +3525,7 @@ fn dump_states(states: &States, rules: &Vec<Rule>, symbols: &Symbols, n: i32)
 			}
 		}
 		for action in s.actions.iter()
-		{	if LemonMint::print_action(rules, action, &mut out, 30, true).unwrap()
+		{	if LemonMint::print_action(symbols, rules, action, &mut out, 30, true).unwrap()
 			{	writeln!(out).unwrap();
 			}
 		}
