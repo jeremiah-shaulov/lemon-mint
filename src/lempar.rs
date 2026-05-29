@@ -200,15 +200,24 @@ struct LookaheadAndAction
 
 %%
 
-/// The state of the parser is completely contained in an instance of the following structure
+/// The parser. The complete parser state lives in this structure.
+///
+/// Create it with [`new`](Self::new), push terminal tokens in input order with
+/// [`add_token`](Self::add_token) (or [`try_add_token`](Self::try_add_token)), then call
+/// [`end`](Self::end) to finish and obtain the value of the start symbol.
 pub struct Parser
 {	max_stack_size: usize,
 	stack: Vec<StackEntry>,      // The parser's stack
 	result: Option<StartType>,
+	/// The `%extra_argument` value. It is available as `&mut extra` inside every rule action, and you
+	/// can read or modify it here between tokens.
 	pub extra: ExtraArgumentType,
 }
 impl Parser
-{	pub fn new(extra: ExtraArgumentType) -> Parser
+{	/// Create a new parser.
+	///
+	/// `extra` is the initial value of the `%extra_argument` (its declared type, or `()` by default).
+	pub fn new(extra: ExtraArgumentType) -> Parser
 	{	let mut this = Self
 		{	max_stack_size: 0,
 			stack: Vec::with_capacity(128),
@@ -356,10 +365,26 @@ impl Parser
 	///
 	/// token - The major token number.
 	/// minor - The minor token number.
+	/// Feed one terminal token to the parser.
+	///
+	/// `token` is the terminal and `minor` its semantic value (of the `%token_type`). Call this once
+	/// per token, in the order the tokens appear in the input; reduce actions fire as rules are
+	/// recognized. Returns `Err(())` on a syntax error, after which the parser state is reset.
 	pub fn add_token(&mut self, token: Token, minor: TokenValue) -> Result<(), ()>
 	{	self.do_add_token(token as u32 as CodeType, MinorType::Symbol0(minor), false).map(|_| ())
 	}
 
+	/// Try to feed a terminal token without committing to a syntax error.
+	///
+	/// This is the non-destructive counterpart of [`add_token`](Self::add_token), useful for "soft
+	/// keywords" - words that act as keywords in some positions but are legal identifiers in others.
+	/// Returns:
+	///
+	/// * `Ok(true)` - the token was accepted (shifted, possibly after some forced reductions).
+	/// * `Ok(false)` - the token is not valid in the current state. The parser is left ready to accept
+	///   a different token instead (e.g. the same text re-fed as an identifier): any forced reductions
+	///   the lookahead required have been applied, and they are exactly the ones the alternative token
+	///   would also trigger.
 	pub fn try_add_token(&mut self, token: Token, minor: TokenValue) -> Result<bool, ()>
 	{	self.do_add_token(token as u32 as CodeType, MinorType::Symbol0(minor), true)
 	}
@@ -470,6 +495,11 @@ impl Parser
 		Ok(true)
 	}
 
+	/// Finish parsing.
+	///
+	/// Signals end-of-input, runs the remaining reductions, and returns the semantic value of the
+	/// start symbol (its `%type`). Returns `Err(())` if the input fed so far is not a complete
+	/// sentence of the grammar.
 	pub fn end(&mut self) -> Result<StartType, ()>
 	{	self.do_add_token(0, MinorType::None, false)?;
 		self.stack.truncate(1);
