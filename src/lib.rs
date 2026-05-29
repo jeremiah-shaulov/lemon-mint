@@ -2587,6 +2587,7 @@ impl LemonMintBuilder
 				{	return Err(LemonMintError::new(filename, n_line, format!("Symbol \"{}\" is asked fallback to self // {}, {}", symbol_name, fallback_to_symbol_name, symbol_name)));
 				}
 				self.symbols_builder.get_mut(&symbol_name).fallback_index = fsp.index;
+				self.has_fallback = true;
 			}
 		}
 		Ok(self)
