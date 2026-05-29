@@ -364,7 +364,7 @@ impl Parser
 	{	self.do_add_token(token as u32 as CodeType, MinorType::Symbol0(minor), true)
 	}
 
-	fn do_add_token(&mut self, major: CodeType, minor: MinorType, mut is_try: bool) -> Result<bool, ()>
+	fn do_add_token(&mut self, major: CodeType, minor: MinorType, is_try: bool) -> Result<bool, ()>
 	{	debug_assert!(self.stack.len() != 0);
 		let mut error_hit = false;   // True if major has invoked an error
 		let is_end_of_input = major == 0; // True if we are at the end of input
@@ -390,7 +390,10 @@ impl Parser
 			}
 			else if action >= MIN_REDUCE
 			{	action = self.reduce(action - MIN_REDUCE);
-				is_try = false;
+				// Do not clear is_try here. A trial (try_add_token) must stay recoverable across the
+				// forced reduces that precede a shift/error decision. These reduces are deterministic for
+				// the lookahead position and are exactly the ones the fallback token would also trigger,
+				// so returning Ok(false) at ERROR_ACTION (below) leaves the stack in a consistent state.
 			}
 			else if action == ACCEPT_ACTION
 			{	self.stack.pop();
